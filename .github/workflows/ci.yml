@@ -143,6 +143,7 @@ jobs:
           COMPOSE_B64=$(base64 -w0 infra/docker-compose.prod.yml)
           DB_PASS=$(az keyvault secret show --vault-name eai-dev-kv-glbunq --name database-password --query value -o tsv)
           API_TOKEN=$(az keyvault secret show --vault-name eai-dev-kv-glbunq --name api-security-token --query value -o tsv)
+          ACR_REGISTRY=eaisharedacr.azurecr.io
           az vm run-command invoke \
             --resource-group eai-dev-rg \
             --name eai-dev-host \
@@ -174,6 +175,7 @@ jobs:
           COMPOSE_B64=$(base64 -w0 infra/docker-compose.prod.yml)
           DB_PASS=$(az keyvault secret show --vault-name eai-uat-kv-glbunq --name database-password --query value -o tsv)
           API_TOKEN=$(az keyvault secret show --vault-name eai-uat-kv-glbunq --name api-security-token --query value -o tsv)
+          ACR_REGISTRY=eaisharedacr.azurecr.io
           az vm run-command invoke \
             --resource-group eai-uat-rg \
             --name eai-uat-host \
@@ -205,6 +207,7 @@ jobs:
           COMPOSE_B64=$(base64 -w0 infra/docker-compose.prod.yml)
           DB_PASS=$(az keyvault secret show --vault-name eai-prod-kv-glbunq --name database-password --query value -o tsv)
           API_TOKEN=$(az keyvault secret show --vault-name eai-prod-kv-glbunq --name api-security-token --query value -o tsv)
+          ACR_REGISTRY=eaisharedacr.azurecr.io
           az vm run-command invoke \
             --resource-group eai-prod-rg \
             --name eai-prod-host \
