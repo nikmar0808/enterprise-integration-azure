@@ -36,7 +36,7 @@ resource "azuread_application_federated_identity_credential" "gha_deploy_dev_ref
   description    = "GitHub Actions OIDC — dev build/push jobs (no environment: key, push-triggered on develop)"
   audiences      = ["api://AzureADTokenExchange"]
   issuer         = "https://token.actions.githubusercontent.com"
-  subject        = "repo:nikmar0808/enterprise-integration-azure:ref:refs/heads/develop"
+  subject        = "repo:nikmar0808@217144230/enterprise-integration-azure@1366899366:ref:refs/heads/develop"
 }
 
 # A second, separate credential — Entra federated credentials match exactly
@@ -52,7 +52,7 @@ resource "azuread_application_federated_identity_credential" "gha_deploy_dev" {
   description    = "GitHub Actions OIDC — deploy-dev job (declares environment: dev)"
   audiences      = ["api://AzureADTokenExchange"]
   issuer         = "https://token.actions.githubusercontent.com"
-  subject        = "repo:nikmar0808/enterprise-integration-azure:environment:dev"
+  subject        = "repo:nikmar0808@217144230/enterprise-integration-azure@1366899366:environment:dev"
 }
 
 resource "azuread_application" "gha_deploy_uat" {
@@ -69,7 +69,7 @@ resource "azuread_application_federated_identity_credential" "gha_deploy_uat" {
   issuer         = "https://token.actions.githubusercontent.com"
   # A workflow_dispatch-triggered job declaring `environment: uat` receives
   # this claim shape, not a ref:refs/heads/BRANCH shape.
-  subject        = "repo:nikmar0808/enterprise-integration-azure:environment:uat"
+  subject        = "repo:nikmar0808@217144230/enterprise-integration-azure@1366899366:environment:uat"
 }
 
 resource "azuread_application" "gha_deploy_prod" {
@@ -84,7 +84,7 @@ resource "azuread_application_federated_identity_credential" "gha_deploy_prod" {
   description    = "GitHub Actions OIDC — prod environment deployments"
   audiences      = ["api://AzureADTokenExchange"]
   issuer         = "https://token.actions.githubusercontent.com"
-  subject        = "repo:nikmar0808/enterprise-integration-azure:environment:prod"
+  subject        = "repo:nikmar0808@217144230/enterprise-integration-azure@1366899366:environment:prod"
 }
 
 # --- HCP Terraform identity ---
