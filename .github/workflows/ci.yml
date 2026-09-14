@@ -150,7 +150,7 @@ jobs:
             --scripts "echo $COMPOSE_B64 | base64 -d > /opt/eai/docker-compose.prod.yml" \
                       "echo DATABASE_URL=postgresql+psycopg://smart_meter_admin:${DB_PASS}@${{ vars.DEV_POSTGRES_FQDN }}:5432/smart_meter_warehouse > /opt/eai/.env" \
                       "echo API_SECURITY_TOKEN=${API_TOKEN} >> /opt/eai/.env" \
-                      "az login --identity --username ${{ vars.DEV_VM_IDENTITY_CLIENT_ID }}" \
+                      "az login --identity --client-id ${{ vars.DEV_VM_IDENTITY_CLIENT_ID }}" \
                       "az acr login --name eaisharedacr" \
                       "cd /opt/eai && ACR_REGISTRY=$ACR_REGISTRY IMAGE_TAG=${{ github.sha }} docker compose -f docker-compose.prod.yml --env-file .env pull" \
                       "cd /opt/eai && ACR_REGISTRY=$ACR_REGISTRY IMAGE_TAG=${{ github.sha }} docker compose -f docker-compose.prod.yml --env-file .env up -d"
@@ -181,7 +181,7 @@ jobs:
             --scripts "echo $COMPOSE_B64 | base64 -d > /opt/eai/docker-compose.prod.yml" \
                       "echo DATABASE_URL=postgresql+psycopg://smart_meter_admin:${DB_PASS}@${{ vars.UAT_POSTGRES_FQDN }}:5432/smart_meter_warehouse > /opt/eai/.env" \
                       "echo API_SECURITY_TOKEN=${API_TOKEN} >> /opt/eai/.env" \
-                      "az login --identity --username ${{ vars.UAT_VM_IDENTITY_CLIENT_ID }}" \
+                      "az login --identity --client-id ${{ vars.UAT_VM_IDENTITY_CLIENT_ID }}" \
                       "az acr login --name eaisharedacr" \
                       "cd /opt/eai && ACR_REGISTRY=$ACR_REGISTRY IMAGE_TAG=${{ inputs.image_tag }} docker compose -f docker-compose.prod.yml --env-file .env pull" \
                       "cd /opt/eai && ACR_REGISTRY=$ACR_REGISTRY IMAGE_TAG=${{ inputs.image_tag }} docker compose -f docker-compose.prod.yml --env-file .env up -d"
@@ -212,7 +212,7 @@ jobs:
             --scripts "echo $COMPOSE_B64 | base64 -d > /opt/eai/docker-compose.prod.yml" \
                       "echo DATABASE_URL=postgresql+psycopg://smart_meter_admin:${DB_PASS}@${{ vars.PROD_POSTGRES_FQDN }}:5432/smart_meter_warehouse > /opt/eai/.env" \
                       "echo API_SECURITY_TOKEN=${API_TOKEN} >> /opt/eai/.env" \
-                      "az login --identity --username ${{ vars.PROD_VM_IDENTITY_CLIENT_ID }}" \
+                      "az login --identity --client-id ${{ vars.PROD_VM_IDENTITY_CLIENT_ID }}" \
                       "az acr login --name eaisharedacr" \
                       "cd /opt/eai && ACR_REGISTRY=$ACR_REGISTRY IMAGE_TAG=${{ inputs.image_tag }} docker compose -f docker-compose.prod.yml --env-file .env pull" \
                       "cd /opt/eai && ACR_REGISTRY=$ACR_REGISTRY IMAGE_TAG=${{ inputs.image_tag }} docker compose -f docker-compose.prod.yml --env-file .env up -d"
