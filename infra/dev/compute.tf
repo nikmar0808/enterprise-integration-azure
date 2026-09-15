@@ -41,6 +41,44 @@ resource "azurerm_linux_virtual_machine" "dev" {
     version   = "latest"
   }
 
+  # custom_data = base64encode(<<-EOF
+  #   #!/bin/bash
+  #   set -e
+  #   apt-get update -y
+  #   apt-get install -y ca-certificates curl apt-transport-https lsb-release gnupg docker.io docker-compose-plugin
+  #   systemctl enable --now docker
+  #   usermod -aG docker azureuser
+
+  #   # Azure CLI is required on the VM because the deploy workflow's Run
+  #   # Command script performs `az login --identity` + `az acr login`
+  #   # locally on this VM, rather than assuming any pre-installed tooling.
+  #   curl -sL https://aka.ms/InstallAzureCLIDeb | bash
+
+  #   mkdir -p /opt/eai
+  # EOF
+  # )
+
+  # Run this if the VM is already created and you want to bootstrap it due to /opt/eai being missing or the Azure CLI not being installed.
+  # This is a one-time operation, and the script is idempotent.
+  # (.venv) PS C:\enterprise-integration-azure\infra\dev>
+  # az vm run-command invoke `
+  #    --resource-group eai-dev-rg `
+  #    --name eai-dev-host `
+  #    --command-id RunShellScript `
+  #    --scripts 'set -eux
+  #  mkdir -p /opt/eai
+  #  
+  #  if ! command -v az >/dev/null 2>&1; then
+  #    curl -sL https://aka.ms/InstallAzureCLIDeb | bash
+  #  fi
+  #  
+  #  az version
+  #  docker --version
+  #  docker compose version
+  #  ls -ld /opt/eai'
+  #
+
+
   custom_data = base64encode(<<-EOF
     #!/bin/bash
     set -e
