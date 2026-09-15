@@ -163,7 +163,7 @@ jobs:
             --resource-group eai-dev-rg \
             --name eai-dev-host \
             --command-id RunShellScript \
-            --scripts  "set -euo pipefail" \
+            --scripts  "set -e" \
               "echo 'Waiting for cloud-init bootstrap...'" \
               "cloud-init status --wait" \
               "echo 'Validating VM prerequisites...'" \
@@ -203,7 +203,7 @@ jobs:
             --resource-group eai-uat-rg \
             --name eai-uat-host \
             --command-id RunShellScript \
-            --scripts  "set -euo pipefail" \
+            --scripts  "set -e" \
               "echo 'Waiting for cloud-init bootstrap...'" \
               "cloud-init status --wait" \
               "echo 'Validating VM prerequisites...'" \
@@ -243,7 +243,7 @@ jobs:
             --resource-group eai-prod-rg \
             --name eai-prod-host \
             --command-id RunShellScript \
-            --scripts  "set -euo pipefail" \
+            --scripts  "set -e" \
               "echo 'Waiting for cloud-init bootstrap...'" \
               "cloud-init status --wait" \
               "echo 'Validating VM prerequisites...'" \
