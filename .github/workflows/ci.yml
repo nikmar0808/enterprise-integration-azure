@@ -23,6 +23,7 @@ env:
 jobs:
   secret-scan:
     runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -31,6 +32,7 @@ jobs:
 
   dependency-scan:
     runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_dispatch'
     permissions: { contents: read, security-events: write }
     steps:
       - uses: actions/checkout@v4
@@ -49,6 +51,7 @@ jobs:
   java-build-test:
     needs: [secret-scan, dependency-scan]
     runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -59,6 +62,7 @@ jobs:
   python-build-test:
     needs: [secret-scan, dependency-scan]
     runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_dispatch'
     services:
       postgres:
         image: postgres:16-alpine
@@ -156,7 +160,7 @@ jobs:
                       "cd /opt/eai && ACR_REGISTRY=$ACR_REGISTRY IMAGE_TAG=${{ github.sha }} docker compose -f docker-compose.prod.yml --env-file .env up -d"
 
   promote-uat:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/uat'
     runs-on: ubuntu-latest
     environment: uat
     permissions: { contents: read, id-token: write }
@@ -188,7 +192,7 @@ jobs:
                       "cd /opt/eai && ACR_REGISTRY=$ACR_REGISTRY IMAGE_TAG=${{ inputs.image_tag }} docker compose -f docker-compose.prod.yml --env-file .env up -d"
 
   promote-prod:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: prod
     permissions: { contents: read, id-token: write }

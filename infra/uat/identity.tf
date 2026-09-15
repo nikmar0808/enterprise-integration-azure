@@ -28,4 +28,18 @@ resource "azurerm_role_assignment" "gha_uat_kv_secrets_user" {
   principal_id         = data.azuread_service_principal.gha_deploy_uat.object_id
 }
 
+
+# Required by promote-uat's "confirm the image tag exists" step, which
+# calls az acr repository show against the shared registry using
+# gha_deploy_uat's own AAD identity — a data-plane read, not covered by
+# the VM Contributor / Key Vault grants above. Pull-only: promote-uat never
+# pushes, matching the read-only relationship UAT has with the registry
+# throughout this plan (Section 4 of RELEASE_MANAGEMENT_GEN.md — only DEV
+# builds and pushes).
+resource "azurerm_role_assignment" "gha_uat_acr_pull" {
+  scope                = data.azurerm_container_registry.shared.id
+  role_definition_name = "AcrPull"
+  principal_id         = data.azuread_service_principal.gha_deploy_uat.object_id
+}
+
 output "vm_identity_client_id" { value = azurerm_user_assigned_identity.vm.client_id }
