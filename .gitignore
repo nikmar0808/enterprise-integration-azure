@@ -26,5 +26,3 @@ crash.*.log
 
 *.class
 *.jar
-.github/workflows/ci.yml
-infra/docker-compose.prod.yml

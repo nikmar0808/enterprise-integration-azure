@@ -18,6 +18,9 @@ data "azuread_service_principal" "gha_deploy_dev" {
 
 # Only DEV builds and pushes images — matches AWS's gha-deploy-role-dev
 # being the only one of the three roles with ECR push permission.
+# This resource is not configured for UAT or PROD because those environments 
+# builds are read-only and do not push images to ACR. The GitHub Actions workflow is
+# configured to fail if it tries to push to ACR from those environments.
 resource "azurerm_role_assignment" "gha_dev_acr_push" {
   scope                = data.azurerm_container_registry.shared.id
   role_definition_name = "AcrPush"
@@ -41,3 +44,5 @@ resource "azurerm_role_assignment" "gha_dev_kv_secrets_user" {
   role_definition_name = "Key Vault Secrets User"
   principal_id         = data.azuread_service_principal.gha_deploy_dev.object_id
 }
+
+output "vm_identity_client_id" { value = azurerm_user_assigned_identity.vm.client_id }

@@ -15,17 +15,34 @@ resource "azurerm_api_management_api" "uat" {
   display_name        = "Enterprise Integration API"
   path                = ""
   protocols           = ["https"]
+  subscription_required = false
   service_url         = "http://${azurerm_public_ip.vm.ip_address}:8081"
 }
 
 resource "azurerm_api_management_api_operation" "uat_proxy" {
-  operation_id        = "proxy-all"
+  operation_id        = "health"
   api_name            = azurerm_api_management_api.uat.name
   api_management_name = azurerm_api_management.uat.name
   resource_group_name = azurerm_resource_group.uat.name
-  display_name        = "Proxy all"
-  method              = "*"
-  url_template        = "/*"
+
+  display_name = "Health"
+  method       = "GET"
+  url_template = "/health"
+
+  response {
+    status_code = 200
+  }
+}
+
+resource "azurerm_api_management_api_operation" "uat_bulk" {
+  operation_id        = "bulk"
+  api_name            = azurerm_api_management_api.uat.name
+  api_management_name = azurerm_api_management.uat.name
+  resource_group_name = azurerm_resource_group.uat.name
+
+  display_name = "Bulk Ingest"
+  method       = "POST"
+  url_template = "/api/v1/ingest/bulk"
 
   response {
     status_code = 200

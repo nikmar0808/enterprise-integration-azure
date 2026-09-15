@@ -43,10 +43,17 @@ resource "azurerm_linux_virtual_machine" "uat" {
  
   custom_data = base64encode(<<-EOF
     #!/bin/bash
+    set -e
     apt-get update -y
-    apt-get install -y docker.io docker-compose-plugin
+    apt-get install -y ca-certificates curl apt-transport-https lsb-release gnupg docker.io docker-compose-plugin
     systemctl enable --now docker
     usermod -aG docker azureuser
+
+    # Azure CLI is required on the VM because the deploy workflow's Run
+    # Command script performs `az login --identity` + `az acr login`
+    # locally on this VM, rather than assuming any pre-installed tooling.
+    curl -sL https://aka.ms/InstallAzureCLIDeb | bash
+
     mkdir -p /opt/eai
   EOF
   )

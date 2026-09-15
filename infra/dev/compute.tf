@@ -43,10 +43,42 @@ resource "azurerm_linux_virtual_machine" "dev" {
 
   custom_data = base64encode(<<-EOF
     #!/bin/bash
-    apt-get update -y
-    apt-get install -y docker.io docker-compose-plugin
+    set -e
+    exec > >(tee /var/log/eai-bootstrap.log) 2>&1
+
+    # Ubuntu cloud images run unattended-upgrades and apt-daily(-upgrade)
+    # timers on first boot; these race with this script's own apt-get calls
+    # for /var/lib/dpkg/lock-frontend and cause a hard, non-retried failure
+    # rather than a wait. Disabling them here, before any apt-get call
+    # below, removes the race rather than papering over it with a retry
+    # loop against an opponent of unknown duration.
+    systemctl stop unattended-upgrades.service 2>/dev/null || true
+    systemctl disable unattended-upgrades.service 2>/dev/null || true
+    systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+    systemctl disable apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+
+    # Defense-in-depth: wait up to 120s for the lock on every invocation,
+    # in case cloud-init's own bootstrap-phase apt-get is still mid-run
+    # despite the disables above.
+    APT="apt-get -o DPkg::Lock::Timeout=120"
+
+    $APT update -y
+    $APT install -y ca-certificates curl gnupg
+
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+    chmod a+r /etc/apt/keyrings/docker.asc
+    echo \
+      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+      $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+    $APT update -y
+    $APT install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
     systemctl enable --now docker
     usermod -aG docker azureuser
+
+    curl -sL https://aka.ms/InstallAzureCLIDeb | bash
+
     mkdir -p /opt/eai
   EOF
   )

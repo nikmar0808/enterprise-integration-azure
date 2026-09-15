@@ -27,23 +27,35 @@ resource "azurerm_subnet" "db" {
   }
 }
 
+# --- SUPERSEDED: Azure Bastion subnet ---
+# This is how interactive VM access should have been implemented if not for
+# Azure Free Tier's 3-Standard-public-IP-per-subscription limit. A dedicated
+# Bastion host per environment (Section 10.1.6) requires one additional
+# Standard public IP per environment (3 total across DEV/UAT/PROD), which
+# together with the 3 VM public IPs already required as APIM's HTTP_PROXY
+# backend target (Section 10.1.8) exceeds the free-tier quota (6 > 3, and
+# the VM IPs are non-negotiable). Commented out below and replaced by the
+# AllowOperatorSSH rule on the app NSG plus `az ssh vm` (Section 10.1.6),
+# which reuses the VM's already-required public IP and consumes no
+# additional quota. A real, non-free-tier subscription should re-enable
+# this subnet and Section 10.1.6's Bastion resources, and remove the
+# AllowOperatorSSH rule below and its NSG-based replacement in favor of
+# this platform-managed, non-internet-routable path.
+#
 # Azure Bastion requires a subnet with exactly this name — not a naming
 # convention, a hard platform requirement.
-resource "azurerm_subnet" "bastion" {
-  name                 = "AzureBastionSubnet"
-  resource_group_name  = azurerm_resource_group.dev.name
-  virtual_network_name = azurerm_virtual_network.dev.name
-  address_prefixes     = ["10.10.3.0/26"]
-}
+# resource "azurerm_subnet" "bastion" {
+#   name                 = "AzureBastionSubnet"
+#   resource_group_name  = azurerm_resource_group.dev.name
+#   virtual_network_name = azurerm_virtual_network.dev.name
+#   address_prefixes     = ["10.10.3.0/26"]
+# }
 
 resource "azurerm_network_security_group" "app" {
   name                = "eai-dev-app-nsg"
   location            = azurerm_resource_group.dev.location
   resource_group_name = azurerm_resource_group.dev.name
 
-  # No inbound SSH rule — matches Rule 8. Only the application port is
-  # opened; Bastion traffic to the VM is on the Azure-managed Bastion
-  # subnet's own NSG behavior, not this one.
   security_rule {
     name                       = "AllowJavaGateway"
     priority                   = 100
@@ -53,6 +65,24 @@ resource "azurerm_network_security_group" "app" {
     source_port_range          = "*"
     destination_port_range     = "8081"
     source_address_prefix      = "*"
+    destination_address_prefix = "*"
+  }
+
+  # Replaces Bastion's network path (see superseded subnet block above) —
+  # direct AAD-authenticated SSH to the VM's own public IP, which is already
+  # required for the APIM backend target and therefore consumes no
+  # additional public-IP quota. var.operator_ip_cidr must be a narrow range
+  # (ideally a /32) — never 0.0.0.0/0, since unlike Bastion's data path this
+  # port is genuinely internet-facing.
+  security_rule {
+    name                       = "AllowOperatorSSH"
+    priority                   = 110
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "22"
+    source_address_prefix      = var.operator_ip_cidr
     destination_address_prefix = "*"
   }
 }
