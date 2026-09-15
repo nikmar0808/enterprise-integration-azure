@@ -163,16 +163,14 @@ jobs:
             --resource-group eai-dev-rg \
             --name eai-dev-host \
             --command-id RunShellScript \
-            --scripts  "set -euo pipefail
-              echo 'Waiting for cloud-init bootstrap...'
-              cloud-init status --wait
-
-              echo 'Validating VM prerequisites...'
-              command -v az
-              docker --version
-              docker compose version
-              test -d /opt/eai
-
+            --scripts  "set -euo pipefail \
+              echo 'Waiting for cloud-init bootstrap...' \
+              cloud-init status --wait \
+              echo 'Validating VM prerequisites...' \
+              command -v az \
+              docker --version \
+              docker compose version \
+              test -d /opt/eai \
               "echo $COMPOSE_B64 | base64 -d > /opt/eai/docker-compose.prod.yml" \
               "echo DATABASE_URL=postgresql+psycopg://smart_meter_admin:${DB_PASS}@${{ vars.DEV_POSTGRES_FQDN }}:5432/smart_meter_warehouse > /opt/eai/.env" \
               "echo API_SECURITY_TOKEN=${API_TOKEN} >> /opt/eai/.env" \
@@ -205,16 +203,14 @@ jobs:
             --resource-group eai-uat-rg \
             --name eai-uat-host \
             --command-id RunShellScript \
-            --scripts  "set -euo pipefail
-              echo 'Waiting for cloud-init bootstrap...'
-              cloud-init status --wait
-
-              echo 'Validating VM prerequisites...'
-              command -v az
-              docker --version
-              docker compose version
-              test -d /opt/eai
-
+            --scripts  "set -euo pipefail \
+              echo 'Waiting for cloud-init bootstrap...' \
+              cloud-init status --wait \
+              echo 'Validating VM prerequisites...' \
+              command -v az \
+              docker --version \
+              docker compose version \
+              test -d /opt/eai \
               "echo $COMPOSE_B64 | base64 -d > /opt/eai/docker-compose.prod.yml" \
               "echo DATABASE_URL=postgresql+psycopg://smart_meter_admin:${DB_PASS}@${{ vars.UAT_POSTGRES_FQDN }}:5432/smart_meter_warehouse > /opt/eai/.env" \
               "echo API_SECURITY_TOKEN=${API_TOKEN} >> /opt/eai/.env" \
@@ -247,16 +243,14 @@ jobs:
             --resource-group eai-prod-rg \
             --name eai-prod-host \
             --command-id RunShellScript \
-            --scripts  "set -euo pipefail
-              echo 'Waiting for cloud-init bootstrap...'
-              cloud-init status --wait
-
-              echo 'Validating VM prerequisites...'
-              command -v az
-              docker --version
-              docker compose version
-              test -d /opt/eai
-
+            --scripts  "set -euo pipefail \
+              echo 'Waiting for cloud-init bootstrap...' \
+              cloud-init status --wait \
+              echo 'Validating VM prerequisites...' \
+              command -v az \
+              docker --version \
+              docker compose version \
+              test -d /opt/eai \
               "echo $COMPOSE_B64 | base64 -d > /opt/eai/docker-compose.prod.yml" \
               "echo DATABASE_URL=postgresql+psycopg://smart_meter_admin:${DB_PASS}@${{ vars.PROD_POSTGRES_FQDN }}:5432/smart_meter_warehouse > /opt/eai/.env" \
               "echo API_SECURITY_TOKEN=${API_TOKEN} >> /opt/eai/.env" \
