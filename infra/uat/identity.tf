@@ -13,7 +13,7 @@ resource "azurerm_role_assignment" "vm_acr_pull" {
 }
 
 data "azuread_service_principal" "gha_deploy_uat" {
-  client_id = "ee3d709e-2cc9-4a3c-b274-cc8f823d964c"
+  client_id = var.gha_deploy_client_id
 }
 
 resource "azurerm_role_assignment" "gha_uat_vm_runcommand" {

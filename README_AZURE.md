@@ -1,77 +1,31 @@
-# Enterprise Integration Project
+# Enterprise Integration Project — Azure Implementation
 
 This project implements a small enterprise integration flow in which a Java Spring Boot service receives smart-meter data, validates and forwards the payload to a Python transformation API, and persists the resulting data in PostgreSQL.
 
-The Azure implementation uses Microsoft Azure for the API boundary, compute, container registry, secrets, database, networking and identity services.
+This implementation targets Microsoft Azure and is structured as a three-environment (Development, UAT, Production) release pipeline, using Microsoft Entra ID federated identity, Azure Container Registry, Azure Key Vault, Azure Database for PostgreSQL Flexible Server, Azure API Management, and HCP Terraform for infrastructure state.
 
 ## What this project does
 
-The application flow is:
-
 ```mermaid
-flowchart LR
-    Client[Client] --> Java[Java Ingestion Service :8081]
-    Java --> Python[Python Transformation API :8082]
-    Python --> DB[(PostgreSQL :5432)]
+flowchart TB
+    Client[Client]
+    Java[Java Ingestion Service :8081]
+    Python[Python Transformation API :8082]
+    DB[(PostgreSQL :5432)]
+
+    Client --> Java
+    Java --> Python
+    Python --> DB
     Python --> Java
 ```
 
 The Java service provides the ingestion boundary. The Python service performs transformation and persistence-related processing. PostgreSQL provides the application data store.
 
-## Azure deployment architecture
-
-```mermaid
-flowchart TB
-    subgraph SourceControl[Source Control]
-        GH[develop / main branches]
-    end
-
-    subgraph CI[CI/CD Pipeline]
-        Scan[Secret scan - TruffleHog<br/>Dependency/IaC scan - Trivy]
-        Build[Build + test<br/>Multi-stage, non-root image build]
-        ImgScan[Image scan - Trivy]
-        Push[Push to Azure Container Registry]
-        Deploy[Deployment<br/>approval-gated environment]
-        Scan --> Build --> ImgScan --> Push --> Deploy
-    end
-
-    subgraph Terraform[HCP Terraform]
-        TFRun[Plan / Apply<br/>OIDC → Azure workload identity]
-    end
-
-    subgraph Azure[Microsoft Azure]
-        APIM[Azure API Management<br/>HTTP API]
-        VM[Azure Linux VM<br/>Managed Identity]
-        Java[Ingestion service :8081]
-        Python[Transformation service :8082<br/>internal network only]
-        PG[(Azure Database for PostgreSQL<br/>Flexible Server)]
-        KV[Azure Key Vault]
-        ACR[Azure Container Registry]
-    end
-
-    GH -->|push, OIDC| Scan
-    GH -->|push, VCS webhook| TFRun
-    TFRun -->|provisions| APIM
-    TFRun -->|provisions| VM
-    TFRun -->|provisions| PG
-    TFRun -->|provisions| ACR
-    TFRun -->|provisions| KV
-    Push -->|OIDC → Azure deployment identity| ACR
-    Deploy -->|VM Run Command| VM
-    VM -->|runs| Java
-    Java -->|internal Docker network| Python
-    Python -->|port 5432| PG
-    VM -.->|managed identity| KV
-    VM -.->|managed identity| ACR
-    Internet((Public internet)) --> APIM
-    APIM -->|HTTP proxy, port 8081| VM
-```
-
-Full design rationale is documented in [`ARCHITECTURE_AZURE.md`](ARCHITECTURE_AZURE.md). Step-by-step deployment instructions are documented in [`DEPLOYMENT_AZURE.md`](DEPLOYMENT_AZURE.md).
+Full design rationale is documented in [`ARCHITECTURE_AZURE.md`](ARCHITECTURE_AZURE.md). Infrastructure inventory and identity relationships are documented in [`INFRA_VIEW_AZURE.md`](INFRA_VIEW_AZURE.md). Step-by-step deployment instructions are documented in [`DEPLOYMENT_AZURE.md`](DEPLOYMENT_AZURE.md).
 
 ## Local quickstart
 
-Requires Docker and Docker Compose. No Azure account is required for local application verification. `docker-compose.dev.yml` builds the application images from source and includes a containerized PostgreSQL instance. It is separate from the Azure deployment configuration.
+Requires Docker and Docker Compose. No Azure account is needed for this path — it verifies the application layer independently of the cloud deployment. `docker-compose.dev.yml` builds the application images from source and includes a containerized PostgreSQL instance; it is distinct from `infra/docker-compose.prod.yml`, used only by the deployed Azure environments (see [`DEPLOYMENT_AZURE.md`](DEPLOYMENT_AZURE.md)).
 
 ```bash
 # Run from the repository root
@@ -100,122 +54,70 @@ Invoke-RestMethod -Uri http://localhost:8081/api/v1/ingest/bulk -Method Post -Co
   -Body '{"meter_id":"MTR-000123","grid_zone":"ZONE-A","readings":[{"timestamp":"2026-01-01T00:00:00Z","kwh_value":12.5}]}'
 ```
 
-## Testing the deployment
+## Testing a deployed environment
 
-Once deployed to Azure (see [`DEPLOYMENT_AZURE.md`](DEPLOYMENT_AZURE.md)), the same ingestion endpoint is reached through the API Management URL rather than `localhost`.
+Once deployed to Azure (see [`DEPLOYMENT_AZURE.md`](DEPLOYMENT_AZURE.md)), the same ingestion endpoint is reached through that environment's API Management gateway URL rather than `localhost`.
 
 ```powershell
-# Run from: <REPO_NAME>/infra
-cd infra
-$apiUrl = terraform output -raw api_management_url
+# Run from: <REPO_NAME>/infra/<env>
+cd infra/<env>
+$apiUrl = terraform output -raw apim_gateway_url
 Invoke-RestMethod -Uri "$apiUrl/api/v1/ingest/bulk" -Method Post -ContentType "application/json" -Body '{"meter_id":"MTR-000123","grid_zone":"ZONE-A","readings":[{"timestamp":"2026-01-01T00:00:00Z","kwh_value":12.5}]}'
 ```
 
-Bulk readings can be exercised with the repository test utility where present:
-
-```powershell
-# Run from: <REPO_NAME>
-python .\test\stream_telemetry.py
-```
-
-The PostgreSQL Flexible Server is not intended to be publicly exposed. Database verification should therefore use the deployment's approved administrative or managed-access procedure rather than a public database connection.
-
-## Configuration
-
-Environment-specific configuration is kept outside application source wherever practical.
-
-Typical deployment values include:
-
-- `<AZURE_TENANT_ID>`
-- `<AZURE_SUBSCRIPTION_ID>`
-- `<AZURE_LOCATION>`
-- `<AZURE_RESOURCE_GROUP>`
-- `<AZURE_ACR_NAME>`
-- `<AZURE_KEY_VAULT_NAME>`
-- `<AZURE_VM_NAME>`
-- `<AZURE_POSTGRES_SERVER>`
-- `<AZURE_DATABASE_NAME>`
-- `<AZURE_APIM_NAME>`
-- `<AZURE_POSTGRES_FQDN>`
-- `<GITHUB_ORG>`
-- `<REPO_NAME>`
-
-Secrets such as database passwords and API tokens must not be committed to the repository. Azure Key Vault is the designated secret store for the deployed environment.
-
-## CI/CD
-
-The CI pipeline retains the quality gates used by the project:
-
-1. Secret scanning with TruffleHog.
-2. Dependency and IaC scanning with Trivy.
-3. Java build and tests with Maven.
-4. Python dependency installation and tests with pytest.
-5. Multi-stage, non-root Docker image builds.
-6. Container image scanning with Trivy.
-7. Publishing immutable commit-identified images to Azure Container Registry.
-8. Deployment through an explicitly protected Azure environment.
-
-The deployable artifact should be identified by its image digest. A promotion to UAT or PROD must not rebuild the application image.
+The PostgreSQL Flexible Server in every environment has no public network access by design. Database verification uses `az ssh vm` into that environment's compute instance — see `DEPLOYMENT_AZURE.md`'s verification sections for the full walkthrough.
 
 ## Environments
 
-The Azure deployment model uses three runtime environments — DEV, UAT and PROD — that are structurally identical and coexist persistently in Azure, each in its own resource group with its own compute, database, and Key Vault. Promotion between environments redeploys the same immutable image digest; it never involves destroying or recreating another environment's infrastructure or data:
+Development, UAT, and Production are structurally identical deployments of the same Terraform configuration, isolated by resource group and Azure RBAC scope within a single subscription rather than by separate subscriptions. Promotion between environments redeploys the same immutable container image — built once, on Development — to the next environment; it never rebuilds from source.
 
 ```mermaid
 flowchart LR
-    Build[Immutable Build Artifact] --> DEV[DEV]
-    DEV -->|promote same digest| UAT[UAT]
-    UAT -->|Production approval| PROD[PROD]
+    Build[Immutable Build Artifact] --> Dev[Development]
+    Dev -->|promote-uat, workflow_dispatch| UAT[UAT]
+    UAT -->|promote-prod, workflow_dispatch, approval-gated| Prod[Production]
 ```
 
-DEV deployment may be automatic after the relevant protected integration change. UAT and PROD are protected using GitHub Environment approval gates. The exact branch/tag restrictions and reviewer assignments are deployment configuration documented in the project's execution runbook rather than application behavior.
+Development deploys automatically on a push to `develop`. Promotion to UAT and to Production is triggered manually, via `workflow_dispatch`, naming the exact image tag to promote — see `ARCHITECTURE_AZURE.md`, Section 2, for why automatic promotion on branch push is not used here.
 
-This three-coexisting-environment approach is this project's chosen release management strategy — a reasonable default for a small team, and one that keeps every environment's history available for debugging — but it is not a requirement of the underlying architecture. See `ARCHITECTURE_AZURE.md` for why a third party is free to substitute a different strategy (environment-per-branch, GitOps continuous deployment, canary/blue-green, or a single continuously-updated environment) without changing the identity, network, or secret-handling model documented there.
+**On resource capacity:** a subscription with a constrained regional vCPU quota may not be able to keep all three environments' compute provisioned simultaneously. Where that is the case, Development and UAT are cycled — provisioned and torn down as needed — while Production remains persistent; `ARCHITECTURE_AZURE.md`, Section 7, documents the constraint, the adopted cycling model, and what a standard-quota subscription should do instead (run all three concurrently, and automate promotion on branch push).
 
 ## Azure services
 
 | Azure service | Purpose |
 |---|---|
-| Azure API Management | Public API boundary and HTTP routing |
-| Azure Linux Virtual Machine | Application container runtime |
-| Azure Container Registry | Container image storage |
-| Azure Key Vault | Runtime secrets |
-| Azure Database for PostgreSQL Flexible Server | Managed PostgreSQL database |
-| Azure Virtual Network | Network isolation and connectivity |
+| Azure API Management | Public API boundary and HTTP routing, one instance per environment |
+| Azure Linux Virtual Machine | Application container runtime, one per environment |
+| Azure Container Registry | Container image storage — a single registry shared across all three environments |
+| Azure Key Vault | Runtime secrets, one vault per environment |
+| Azure Database for PostgreSQL Flexible Server | Managed PostgreSQL database, one server per environment, private network only |
+| Azure Virtual Network | Network isolation and connectivity, one VNet per environment |
 | Network Security Group | Network access control |
 | Microsoft Entra ID | Human and workload identity |
-| Managed Identity | Azure identity used by the VM runtime |
-| Azure Bastion | RBAC-authorized interactive operator access to the VM; no public SSH port |
-| Azure Monitor / Log Analytics | Operational telemetry |
-| HCP Terraform | Terraform execution and state management, where configured |
+| Managed Identity | Azure identity used by each VM's runtime |
+| HCP Terraform | Terraform execution and state management |
+
+## Identity and security model
+
+GitHub Actions authenticates to Azure using OIDC/workload identity federation rather than storing long-lived Azure credentials in repository secrets. A separate Microsoft Entra application, with its own federated identity credential, exists per environment — Development, UAT, and Production each have distinct deployment identities, so a compromised or misconfigured credential in one environment cannot act on another's resources.
+
+Each environment's virtual machine uses a user-assigned managed identity for Azure resource access, scoped to pull-only access on the shared Container Registry and to that environment's own Key Vault. No SSH key pair or password is provisioned for any virtual machine; interactive operator access is authenticated through Microsoft Entra ID. See `ARCHITECTURE_AZURE.md`, Section 6, for the two supported access patterns (Azure Bastion, and a narrowly-scoped SSH path) and the trade-off between them.
 
 ## Infrastructure as Code
 
-Azure infrastructure is defined using Terraform. The infrastructure covers the resource group, networking, VM, managed identity, ACR, Key Vault, PostgreSQL Flexible Server, API Management and supporting access configuration.
-
-Terraform is the source of truth for Azure infrastructure. Environment-specific values are supplied through the appropriate Terraform workspace/configuration rather than by maintaining independently edited infrastructure copies.
-
-## Security model
-
-GitHub Actions authenticates to Azure using OIDC/workload identity federation rather than storing long-lived Azure credentials in repository secrets.
-
-The Azure VM uses Managed Identity for Azure resource access. ACR permissions are scoped to image-pull requirements, and Key Vault permissions are scoped to the secrets required by the workload.
-
-The Python transformation service is an internal service and is not intended to be exposed as a public endpoint. PostgreSQL is likewise not intended to be a public application endpoint.
+Azure infrastructure is defined using Terraform, backed by HCP Terraform remote state under Local Execution Mode — every `terraform apply` runs from the operator's own machine, authenticated by an interactive Azure CLI session, with HCP Terraform used solely for state storage. The infrastructure covers networking, compute, managed identity, the container registry, Key Vault, PostgreSQL, and API Management per environment, plus a one-time identity bootstrap configuration with its own separate state.
 
 ## Roadmap
 
-Four items are tracked ahead of treating the Azure implementation as complete:
+Items tracked ahead of treating this implementation as complete:
 
-1. **Revert any temporary vulnerability-scan bypass.** If the CI workflow's Trivy image-scan steps were set to a non-failing exit code during initial pipeline debugging, that is a deliberate, temporary trade-off and not a completed production security gate — revert to a failing exit code and triage findings once the rest of the pipeline is confirmed working. See `DEPLOYMENT_AZURE.md`'s CI/CD phase.
-2. **Container Apps / AKS.** The current implementation intentionally preserves a VM-based Docker runtime rather than a managed container platform, keeping the operational model simple and inspectable at this project's scale. Azure Container Apps or AKS can be introduced later where managed container orchestration is required; this does not require rebuilding the application images.
-3. **Private application backend.** The current API boundary retains a direct API Management-to-VM backend. A later hardening step can make the VM's backend endpoint fully private, consistent with the selected API Management tier's networking support.
-4. **Production resilience.** The initial configuration uses a single VM and a single PostgreSQL Flexible Server instance per environment. Higher availability and scaling can be introduced without changing the application contract.
-
-Separately, note that DEV, UAT and PROD run concurrently under this strategy, so the resource footprint (and cost) is roughly three times that of a single environment. This is an accepted trade-off for keeping every environment's history available for debugging, made explicitly in `ARCHITECTURE_AZURE.md`; a third party more sensitive to cost than to environment history is free to substitute a leaner strategy instead.
+1. **Revert the temporary vulnerability-scan bypass.** The CI workflow's image-scan steps currently run with a non-failing exit code, so CRITICAL/HIGH findings are logged but do not fail the build — a deliberate, temporary trade-off made during initial pipeline setup. See `DEPLOYMENT_AZURE.md`'s CI/CD phase for the exact lines to revert.
+2. **Restore Azure Bastion.** The current interactive-access path substitutes a narrowly-scoped SSH rule for Bastion, due to a free-tier public-IP constraint on the executing subscription — see `ARCHITECTURE_AZURE.md`, Section 6, for the constraint and the restoration path on a standard-quota subscription.
+3. **Automate promotion on branch push.** The current `workflow_dispatch`-gated promotion model is deliberate under this subscription's environment-cycling constraint (`ARCHITECTURE_AZURE.md`, Section 7); a subscription able to keep all three environments persistently provisioned can safely automate `uat`/`main` push-triggered promotion instead.
+4. **Externalize configuration currently embedded in tracked files.** See `RELEASE_NOTES_v2.md` (or the corresponding section of this repository's change log, once introduced) for the specific `.tf`/`.env`/`ci.yml` externalization work tracked as the next release.
 
 ## Documentation
 
-- [`ARCHITECTURE_AZURE.md`](ARCHITECTURE_AZURE.md) — design principles, architecture decisions, and identity/security model
-- [`DEPLOYMENT_AZURE.md`](DEPLOYMENT_AZURE.md) — instructions to deploy the project to an independent Azure environment
+- [`ARCHITECTURE_AZURE.md`](ARCHITECTURE_AZURE.md) — design principles, architecture decisions, and the identity/security model
+- [`DEPLOYMENT_AZURE.md`](DEPLOYMENT_AZURE.md) — instructions to deploy the project to an independent Azure subscription
 - [`INFRA_VIEW_AZURE.md`](INFRA_VIEW_AZURE.md) — infrastructure inventory and relationships

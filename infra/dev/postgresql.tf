@@ -11,7 +11,7 @@ resource "azurerm_private_dns_zone_virtual_network_link" "postgres" {
 }
 
 resource "azurerm_postgresql_flexible_server" "dev" {
-  name                          = "eai-dev-pg-glbunq"
+  name                          = var.postgres_server_name
   resource_group_name           = azurerm_resource_group.dev.name
   location                      = azurerm_resource_group.dev.location
   version                       = "16"

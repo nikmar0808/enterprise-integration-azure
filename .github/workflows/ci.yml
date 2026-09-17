@@ -16,9 +16,10 @@ permissions:
   contents: read
 
 env:
-  ACR_REGISTRY: eaisharedacr.azurecr.io
-  AZURE_TENANT_ID: "0cf62dc3-5a55-48b7-b426-0d69e11b64aa"
-  AZURE_SUBSCRIPTION_ID: "39d5c2a5-e03f-48dd-b4cd-955fdcee2cb0"
+  ACR_NAME: ${{ vars.ACR_NAME }}
+  ACR_REGISTRY: ${{ vars.ACR_NAME }}.azurecr.io # ACR_NAME.azurecr.io is the default login server for Azure Container Registry
+  AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
 jobs:
   secret-scan:
@@ -110,22 +111,22 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID_DEV }}
           tenant-id: ${{ env.AZURE_TENANT_ID }}
           subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
-      - run: az acr login --name eaisharedacr
+      - run: az acr login --name ${{ vars.ACR_NAME }}
       # ACR repository is set to immutable tags at creation — re-pushing an
       # existing tag is rejected rather than silently overwritten. Check
       # first, matching AWS's ECR idempotency check.
       - name: Check whether this commit's images already exist
         id: check-image
         run: |
-          if az acr repository show --name eaisharedacr --image eai-java-gateway:${{ github.sha }} >/dev/null 2>&1; then
+          if az acr repository show --name ${{ vars.ACR_NAME }} --image eai-java-gateway:${{ github.sha }} >/dev/null 2>&1; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
       - if: steps.check-image.outputs.skip == 'false'
         run: |
-          docker build -t $ACR_REGISTRY/eai-java-gateway:${{ github.sha }} ./01-java-ingestion-service
-          docker build -t $ACR_REGISTRY/eai-python-validator:${{ github.sha }} ./02-python-transformation-api
+          docker build -t ${ACR_REGISTRY}/eai-java-gateway:${{ github.sha }} ./01-java-ingestion-service
+          docker build -t ${ACR_REGISTRY}/eai-python-validator:${{ github.sha }} ./02-python-transformation-api
       - if: steps.check-image.outputs.skip == 'false'
         uses: aquasecurity/trivy-action@0.35.0
         # bypassing this temporarily by setting exit-code = 0
@@ -138,8 +139,8 @@ jobs:
         with: { image-ref: "${{ env.ACR_REGISTRY }}/eai-python-validator:${{ github.sha }}", severity: "CRITICAL,HIGH", exit-code: 0 }
       - if: steps.check-image.outputs.skip == 'false'
         run: |
-          docker push $ACR_REGISTRY/eai-java-gateway:${{ github.sha }}
-          docker push $ACR_REGISTRY/eai-python-validator:${{ github.sha }}
+          docker push ${ACR_REGISTRY}/eai-java-gateway:${{ github.sha }}
+          docker push ${ACR_REGISTRY}/eai-python-validator:${{ github.sha }}
 
   deploy-dev:
     needs: docker-build-push
@@ -157,8 +158,8 @@ jobs:
       - name: Deploy via VM Run Command
         run: |
           COMPOSE_B64=$(base64 -w0 infra/docker-compose.prod.yml)
-          DB_PASS=$(az keyvault secret show --vault-name eai-dev-kv-glbunq --name database-password --query value -o tsv)
-          API_TOKEN=$(az keyvault secret show --vault-name eai-dev-kv-glbunq --name api-security-token --query value -o tsv)
+          DB_PASS=$(az keyvault secret show --vault-name ${{ vars.DEV_KEY_VAULT_NAME }} --name database-password --query value -o tsv)
+          API_TOKEN=$(az keyvault secret show --vault-name ${{ vars.DEV_KEY_VAULT_NAME }} --name api-security-token --query value -o tsv)
           az vm run-command invoke \
             --resource-group eai-dev-rg \
             --name eai-dev-host \
@@ -174,10 +175,12 @@ jobs:
               "echo $COMPOSE_B64 | base64 -d > /opt/eai/docker-compose.prod.yml" \
               "echo DATABASE_URL=postgresql+psycopg://smart_meter_admin:${DB_PASS}@${{ vars.DEV_POSTGRES_FQDN }}:5432/smart_meter_warehouse > /opt/eai/.env" \
               "echo API_SECURITY_TOKEN=${API_TOKEN} >> /opt/eai/.env" \
+              "echo ACR_REGISTRY=${ACR_REGISTRY} >> /opt/eai/.env" \
+              "echo IMAGE_TAG=${{ inputs.image_tag }} >> /opt/eai/.env" \
               "az login --identity --client-id ${{ vars.DEV_VM_IDENTITY_CLIENT_ID }}" \
-              "az acr login --name eaisharedacr" \
-              "cd /opt/eai && ACR_REGISTRY=$ACR_REGISTRY IMAGE_TAG=${{ github.sha }} docker compose -f docker-compose.prod.yml --env-file .env pull" \
-              "cd /opt/eai && ACR_REGISTRY=$ACR_REGISTRY IMAGE_TAG=${{ github.sha }} docker compose -f docker-compose.prod.yml --env-file .env up -d"
+              "az acr login --name ${{ vars.ACR_NAME }}" \
+              "cd /opt/eai && ACR_REGISTRY=${ACR_REGISTRY} IMAGE_TAG=${{ github.sha }} docker compose -f docker-compose.prod.yml --env-file .env pull" \
+              "cd /opt/eai && ACR_REGISTRY=${ACR_REGISTRY} IMAGE_TAG=${{ github.sha }} docker compose -f docker-compose.prod.yml --env-file .env up -d"
 
   promote-uat:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/uat'
@@ -192,13 +195,13 @@ jobs:
           tenant-id: ${{ env.AZURE_TENANT_ID }}
           subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
       - name: Confirm the image tag being promoted actually exists
-        run: az acr repository show --name eaisharedacr --image eai-java-gateway:${{ inputs.image_tag }}
+        run: az acr repository show --name ${{ vars.ACR_NAME }} --image eai-java-gateway:${{ inputs.image_tag }}
       - name: Deploy via VM Run Command
         run: |
           COMPOSE_B64=$(base64 -w0 infra/docker-compose.prod.yml)
-          DB_PASS=$(az keyvault secret show --vault-name eai-uat-kv-glbunq --name database-password --query value -o tsv)
-          API_TOKEN=$(az keyvault secret show --vault-name eai-uat-kv-glbunq --name api-security-token --query value -o tsv)
-          ACR_REGISTRY=eaisharedacr.azurecr.io
+          DB_PASS=$(az keyvault secret show --vault-name ${{ vars.UAT_KEY_VAULT_NAME }} --name database-password --query value -o tsv)
+          API_TOKEN=$(az keyvault secret show --vault-name ${{ vars.UAT_KEY_VAULT_NAME }} --name api-security-token --query value -o tsv)
+          ACR_REGISTRY=${ACR_REGISTRY}
           az vm run-command invoke \
             --resource-group eai-uat-rg \
             --name eai-uat-host \
@@ -214,10 +217,12 @@ jobs:
               "echo $COMPOSE_B64 | base64 -d > /opt/eai/docker-compose.prod.yml" \
               "echo DATABASE_URL=postgresql+psycopg://smart_meter_admin:${DB_PASS}@${{ vars.UAT_POSTGRES_FQDN }}:5432/smart_meter_warehouse > /opt/eai/.env" \
               "echo API_SECURITY_TOKEN=${API_TOKEN} >> /opt/eai/.env" \
+              "echo ACR_REGISTRY=${ACR_REGISTRY} >> /opt/eai/.env" \
+              "echo IMAGE_TAG=${{ inputs.image_tag }} >> /opt/eai/.env" \
               "az login --identity --client-id ${{ vars.UAT_VM_IDENTITY_CLIENT_ID }}" \
-              "az acr login --name eaisharedacr" \
-              "cd /opt/eai && ACR_REGISTRY=$ACR_REGISTRY IMAGE_TAG=${{ inputs.image_tag }} docker compose -f docker-compose.prod.yml --env-file .env pull" \
-              "cd /opt/eai && ACR_REGISTRY=$ACR_REGISTRY IMAGE_TAG=${{ inputs.image_tag }} docker compose -f docker-compose.prod.yml --env-file .env up -d"
+              "az acr login --name ${{ vars.ACR_NAME }}" \
+              "cd /opt/eai && ACR_REGISTRY=${ACR_REGISTRY} IMAGE_TAG=${{ inputs.image_tag }} docker compose -f docker-compose.prod.yml --env-file .env pull" \
+              "cd /opt/eai && ACR_REGISTRY=${ACR_REGISTRY} IMAGE_TAG=${{ inputs.image_tag }} docker compose -f docker-compose.prod.yml --env-file .env up -d"
 
   promote-prod:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
@@ -232,13 +237,13 @@ jobs:
           tenant-id: ${{ env.AZURE_TENANT_ID }}
           subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
       - name: Confirm the image tag being promoted actually exists
-        run: az acr repository show --name eaisharedacr --image eai-java-gateway:${{ inputs.image_tag }}
+        run: az acr repository show --name ${{ vars.ACR_NAME }} --image eai-java-gateway:${{ inputs.image_tag }}
       - name: Deploy via VM Run Command
         run: |
           COMPOSE_B64=$(base64 -w0 infra/docker-compose.prod.yml)
-          DB_PASS=$(az keyvault secret show --vault-name eai-prod-kv-glbunq --name database-password --query value -o tsv)
-          API_TOKEN=$(az keyvault secret show --vault-name eai-prod-kv-glbunq --name api-security-token --query value -o tsv)
-          ACR_REGISTRY=eaisharedacr.azurecr.io
+          DB_PASS=$(az keyvault secret show --vault-name ${{ vars.PROD_KEY_VAULT_NAME }} --name database-password --query value -o tsv)
+          API_TOKEN=$(az keyvault secret show --vault-name ${{ vars.PROD_KEY_VAULT_NAME }} --name api-security-token --query value -o tsv)
+          ACR_REGISTRY=${ACR_REGISTRY}
           az vm run-command invoke \
             --resource-group eai-prod-rg \
             --name eai-prod-host \
@@ -254,7 +259,9 @@ jobs:
               "echo $COMPOSE_B64 | base64 -d > /opt/eai/docker-compose.prod.yml" \
               "echo DATABASE_URL=postgresql+psycopg://smart_meter_admin:${DB_PASS}@${{ vars.PROD_POSTGRES_FQDN }}:5432/smart_meter_warehouse > /opt/eai/.env" \
               "echo API_SECURITY_TOKEN=${API_TOKEN} >> /opt/eai/.env" \
+              "echo ACR_REGISTRY=${ACR_REGISTRY} >> /opt/eai/.env" \
+              "echo IMAGE_TAG=${{ inputs.image_tag }} >> /opt/eai/.env" \
               "az login --identity --client-id ${{ vars.PROD_VM_IDENTITY_CLIENT_ID }}" \
-              "az acr login --name eaisharedacr" \
-              "cd /opt/eai && ACR_REGISTRY=$ACR_REGISTRY IMAGE_TAG=${{ inputs.image_tag }} docker compose -f docker-compose.prod.yml --env-file .env pull" \
-              "cd /opt/eai && ACR_REGISTRY=$ACR_REGISTRY IMAGE_TAG=${{ inputs.image_tag }} docker compose -f docker-compose.prod.yml --env-file .env up -d"
+              "az acr login --name ${{ vars.ACR_NAME }}" \
+              "cd /opt/eai && ACR_REGISTRY=${ACR_REGISTRY} IMAGE_TAG=${{ inputs.image_tag }} docker compose -f docker-compose.prod.yml --env-file .env pull" \
+              "cd /opt/eai && ACR_REGISTRY=${ACR_REGISTRY} IMAGE_TAG=${{ inputs.image_tag }} docker compose -f docker-compose.prod.yml --env-file .env up -d"

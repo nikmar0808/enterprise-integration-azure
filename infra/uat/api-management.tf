@@ -1,9 +1,9 @@
 resource "azurerm_api_management" "uat" {
-  name                = "eai-uat-apim-glbunq"
+  name                = var.apim_name
   location            = azurerm_resource_group.uat.location
   resource_group_name = azurerm_resource_group.uat.name
   publisher_name      = "Enterprise Integration Project"
-  publisher_email     = "nikmar0808@users.noreply.github.com"
+  publisher_email     = "${var.github_org}@users.noreply.github.com"
   sku_name            = "Consumption_0"
 }
 

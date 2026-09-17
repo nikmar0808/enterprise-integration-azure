@@ -7,10 +7,11 @@ terraform {
 }
 
 provider "azuread" {}
+
 provider "azurerm" {
   features {}
-  subscription_id = "39d5c2a5-e03f-48dd-b4cd-955fdcee2cb0"
-  tenant_id       = "0cf62dc3-5a55-48b7-b426-0d69e11b64aa"
+  subscription_id = var.azure_subscription_id
+  tenant_id       = var.azure_tenant_id
 }
 
 # --- GitHub Actions deployment identities ---
@@ -36,7 +37,7 @@ resource "azuread_application_federated_identity_credential" "gha_deploy_dev_ref
   description    = "GitHub Actions OIDC — dev build/push jobs (no environment: key, push-triggered on develop)"
   audiences      = ["api://AzureADTokenExchange"]
   issuer         = "https://token.actions.githubusercontent.com"
-  subject        = "repo:nikmar0808@217144230/enterprise-integration-azure@1366899366:ref:refs/heads/develop"
+  subject        = "repo:${var.github_org}@${var.github_owner_id}/${var.repo_name}@${var.github_repo_id}:ref:refs/heads/develop"
 }
 
 # A second, separate credential — Entra federated credentials match exactly
@@ -52,7 +53,7 @@ resource "azuread_application_federated_identity_credential" "gha_deploy_dev" {
   description    = "GitHub Actions OIDC — deploy-dev job (declares environment: dev)"
   audiences      = ["api://AzureADTokenExchange"]
   issuer         = "https://token.actions.githubusercontent.com"
-  subject        = "repo:nikmar0808@217144230/enterprise-integration-azure@1366899366:environment:dev"
+  subject        = "repo:${var.github_org}@${var.github_owner_id}/${var.repo_name}@${var.github_repo_id}:environment:dev"
 }
 
 resource "azuread_application" "gha_deploy_uat" {
@@ -69,7 +70,7 @@ resource "azuread_application_federated_identity_credential" "gha_deploy_uat" {
   issuer         = "https://token.actions.githubusercontent.com"
   # A workflow_dispatch-triggered job declaring `environment: uat` receives
   # this claim shape, not a ref:refs/heads/BRANCH shape.
-  subject        = "repo:nikmar0808@217144230/enterprise-integration-azure@1366899366:environment:uat"
+  subject        = "repo:${var.github_org}@${var.github_owner_id}/${var.repo_name}@${var.github_repo_id}:environment:uat"
 }
 
 resource "azuread_application" "gha_deploy_prod" {
@@ -84,7 +85,7 @@ resource "azuread_application_federated_identity_credential" "gha_deploy_prod" {
   description    = "GitHub Actions OIDC — prod environment deployments"
   audiences      = ["api://AzureADTokenExchange"]
   issuer         = "https://token.actions.githubusercontent.com"
-  subject        = "repo:nikmar0808@217144230/enterprise-integration-azure@1366899366:environment:prod"
+  subject        = "repo:${var.github_org}@${var.github_owner_id}/${var.repo_name}@${var.github_repo_id}:environment:prod"
 }
 
 # --- HCP Terraform identity ---
@@ -95,21 +96,55 @@ resource "azuread_application_federated_identity_credential" "gha_deploy_prod" {
 # it at all under Local execution mode (Section 8), so the single-principal
 # concern above does not apply here.
 
-resource "azuread_application" "tfc_run" {
+resource "azuread_application" "tfc_run_dev" {
   display_name = "tfc-run-identity"
 }
 
-resource "azuread_service_principal" "tfc_run" {
-  client_id = azuread_application.tfc_run.client_id
+resource "azuread_service_principal" "tfc_run_dev" {
+  client_id = azuread_application.tfc_run_dev.client_id
 }
 
-resource "azuread_application_federated_identity_credential" "tfc_run" {
-  application_id = azuread_application.tfc_run.id
+resource "azuread_application_federated_identity_credential" "tfc_run_dev" {
+  application_id = azuread_application.tfc_run_dev.id
   display_name   = "hcp-terraform-workload-identity"
   description    = "HCP Terraform OIDC — plan/apply runs across all three workspaces"
   audiences      = ["api://AzureADTokenExchange"]
   issuer         = "https://app.terraform.io"
-  subject        = "organization:MyOtg:project:*:workspace:eai-*-azure:run_phase:*"
+  subject        = "organization:${var.hcp_terraform_org}:project:*:workspace:${var.hcp_terraform_ws_dev}:run_phase:*"
+}
+
+resource "azuread_application" "tfc_run_uat" {
+  display_name = "tfc-run-identity"
+}
+
+resource "azuread_service_principal" "tfc_run_uat" {
+  client_id = azuread_application.tfc_run_uat.client_id
+}
+
+resource "azuread_application_federated_identity_credential" "tfc_run_uat" {
+  application_id = azuread_application.tfc_run_uat.id
+  display_name   = "hcp-terraform-workload-identity"
+  description    = "HCP Terraform OIDC — plan/apply runs across all three workspaces"
+  audiences      = ["api://AzureADTokenExchange"]
+  issuer         = "https://app.terraform.io"
+  subject        = "organization:${var.hcp_terraform_org}:project:*:workspace:${var.hcp_terraform_ws_uat}:run_phase:*"
+}
+
+resource "azuread_application" "tfc_run_prod" {
+  display_name = "tfc-run-identity"
+}
+
+resource "azuread_service_principal" "tfc_run_prod" {
+  client_id = azuread_application.tfc_run_prod.client_id
+}
+
+resource "azuread_application_federated_identity_credential" "tfc_run_prod" {
+  application_id = azuread_application.tfc_run_prod.id
+  display_name   = "hcp-terraform-workload-identity"
+  description    = "HCP Terraform OIDC — plan/apply runs across all three workspaces"
+  audiences      = ["api://AzureADTokenExchange"]
+  issuer         = "https://app.terraform.io"
+  subject        = "organization:${var.hcp_terraform_org}:project:*:workspace:${var.hcp_terraform_ws_prod}:run_phase:*"
 }
 
 # No RBAC role assignments are created here — that happens once each
@@ -119,4 +154,6 @@ resource "azuread_application_federated_identity_credential" "tfc_run" {
 output "gha_deploy_dev_client_id"  { value = azuread_application.gha_deploy_dev.client_id }
 output "gha_deploy_uat_client_id"  { value = azuread_application.gha_deploy_uat.client_id }
 output "gha_deploy_prod_client_id" { value = azuread_application.gha_deploy_prod.client_id }
-output "tfc_run_client_id"         { value = azuread_application.tfc_run.client_id }
+output "tfc_run_dev_client_id"         { value = azuread_application.tfc_run_dev.client_id }
+output "tfc_run_uat_client_id"         { value = azuread_application.tfc_run_uat.client_id }
+output "tfc_run_prod_client_id"         { value = azuread_application.tfc_run_prod.client_id }

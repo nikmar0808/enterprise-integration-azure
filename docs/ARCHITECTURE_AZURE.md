@@ -1,25 +1,21 @@
-# Architecture and Design Rationale
+# Architecture and Design Rationale — Azure Implementation
 
-This document explains why the system is built the way it is. It does not contain execution instructions — for those, see [`DEPLOYMENT.md`](DEPLOYMENT.md). No Azure subscription, GitHub access, or command execution is required to read this document.
+This document explains why the Azure implementation of the Enterprise Integration Project is built the way it is. It does not contain execution instructions — for those, see [`DEPLOYMENT_AZURE.md`](DEPLOYMENT_AZURE.md). No Azure subscription access or command execution is required to read this document.
+
+This implementation targets Microsoft Azure and is deliberately structured as a three-environment (Development, UAT, Production) coexisting release pipeline, in contrast to a single-environment deployment. Where a design decision exists specifically because of Azure Free Tier constraints on the executing subscription, this document states the constraint explicitly and names the alternative a paid subscription would normally adopt, rather than presenting the constrained choice as the only valid one.
 
 ---
 
 ## 1. Design Principles
 
-1. **CI/CD performs all application deployment actions.** Application changes are promoted through the repository's controlled CI/CD process rather than being deployed manually from a developer workstation.
-2. **No long-lived Azure credentials are used for workload authentication.** GitHub Actions authenticates to Azure using OpenID Connect (OIDC) and Microsoft Entra federated identity. Azure workloads use Managed Identity where Azure-resource authentication is required.
-3. **Human access and workload access are separate concerns.** Human users authenticate through Microsoft Entra ID and receive only the Azure RBAC permissions required for their responsibilities. Applications and automation use workload identities rather than human credentials.
-4. **Secrets are not stored in source control.** Application secrets are stored in Azure Key Vault and are accessed through an authorized identity. Non-secret configuration is kept separate from secrets.
-5. **The transformation service is internal.** The Python service is reachable by the Java ingestion service over the application network and is not exposed as a public API endpoint.
-6. **The database is a managed service.** PostgreSQL is provided by Azure Database for PostgreSQL Flexible Server rather than being operated as a container on the application host.
-7. **The public API boundary is explicit.** Azure API Management provides the managed public API boundary for the application. The Java ingestion service is the application endpoint behind that boundary.
-8. **Infrastructure is defined as code.** Azure resources are provisioned and changed through Terraform. Terraform state is maintained separately from application source code and is not committed to the repository.
-9. **The architecture uses Azure-native security boundaries.** Microsoft Entra ID, Azure RBAC, Network Security Groups, Managed Identity, Key Vault and private database networking are used according to their native Azure responsibilities rather than as a generic cloud-security abstraction retrofitted onto Azure.
-10. **The documented architecture describes the actual project, not a generic Azure reference architecture.** Resource names, application ports, service responsibilities and repository paths are documented as project-specific values; reusable values are represented as placeholders where the document is intended for third-party use.
-11. **Environments coexist and are persistently provisioned.** DEV, UAT and PROD are structurally identical and run simultaneously in Azure, each in its own resource group with its own compute, database, and secret store. Promotion between environments is redeployment of the same immutable container image digest; it never requires destroying or recreating another environment's infrastructure or data.
-12. **The release management strategy is a choice layered on top of the architecture, not a fixed part of it.** This document, together with `DEPLOYMENT_AZURE.md`, documents one specific strategy — three coexisting environments, promotion by immutable image digest, and human approval gates before UAT and PROD — because it is a reasonable default for a small team and keeps environment history available for debugging. A third party adopting this architecture is not bound to this strategy: the identity model, network boundaries, secret handling, and application runtime shape documented in this file do not depend on how many environments exist, how they are named, or how promotion between them is triggered. Alternatives such as environment-per-branch, GitOps-driven continuous deployment, canary or blue-green promotion within a single environment, or a single continuously-updated environment are all compatible with the rest of this architecture and require no change to Sections 1–3 or Appendices A–D — only to the environment/promotion mechanics described in `DEPLOYMENT_AZURE.md`.
-13. **Human operator access to compute is bastion-mediated, never via a network-exposed shell port.** Interactive access to the application VM is authorized through Azure RBAC against Azure Bastion, not through an open SSH port or a distributed private key.
-14. **This repository is a standalone, independently deployable implementation.** It assumes no shared Git repository, VS Code workspace, GitHub organization, Terraform Cloud organization, or resource-naming namespace with any other cloud implementation of this reference project. A person deploying this repository alongside a differently-clouded implementation of the same project is responsible for choosing distinct repository, workspace, and identity names between the two — this document does not assume that responsibility is handled for them.
+1. **CI/CD performs all deployment and promotion actions.** A push to `develop` builds, scans, and deploys to Development automatically. Promotion to UAT and to Production is triggered manually, via `workflow_dispatch`, rather than automatically on a branch push — see Principle 7 and Section 2 for why.
+2. **No long-lived Azure credentials are used by any automated identity.** GitHub Actions authenticates to Azure exclusively via OpenID Connect (OIDC) and Microsoft Entra ID federated identity credentials; no client secret is stored in GitHub. HCP Terraform's own workload identity is provisioned identically for parity with the GitHub Actions identity model, but is not the active authentication path under this project's chosen Execution Mode — see Principle 3.
+3. **All four HCP Terraform workspaces (`eai-dev-azure`, `eai-uat-azure`, `eai-prod-azure`, `eai-shared-azure`) use Local Execution Mode.** Every `terraform apply` runs from the operator's own machine, authenticated by an interactive `az login` session; HCP Terraform is used solely as the remote state backend. Under Local Execution Mode, the `ARM_CLIENT_ID` / `ARM_TENANT_ID` / `ARM_SUBSCRIPTION_ID` / `ARM_USE_OIDC` workspace variables that a Remote- or Agent-mode workspace would require are not applicable and are not configured — HCP Terraform never itself executes a plan or apply under this mode.
+4. **Identity is isolated per environment, not shared behind multiple trust conditions.** GitHub Actions deployment identity is represented by three separate Microsoft Entra application registrations — one per environment — rather than one shared application with three federated identity credentials. Azure RBAC role assignments are scoped to the service principal, not to which federated credential authenticated it; a single shared application would mean any RBAC grant made to it is usable regardless of which environment's GitHub context obtained the token, defeating per-environment isolation. This is the direct Azure counterpart to a hypothetical AWS design using three separate IAM roles rather than one shared role with three trust-policy conditions.
+5. **The container registry is the one deliberate exception to per-environment resource isolation.** A single Azure Container Registry, provisioned in its own resource group and its own HCP Terraform workspace, is shared across all three environments so that an image is built once and the identical image is promoted through Development, UAT, and Production — see Section 5.
+6. **Interactive operator access to compute is authenticated through Microsoft Entra ID, never a distributed credential.** No SSH key pair or password is provisioned for any virtual machine. The originally intended mechanism is Azure Bastion; the mechanism actually in force on this subscription is a narrowly-scoped SSH rule reached through the same Entra-issued ephemeral certificate — see Section 3 and Section 6 for the full rationale and the free-tier constraint that produced this substitution.
+7. **Resource and compute capacity on this subscription is materially constrained by Azure Free Tier limits**, specifically a four-vCPU regional quota on the Burstable v2 VM family and a three-public-IP-per-subscription ceiling. Both constraints shape decisions documented in Section 6 and Section 7 that would not be necessary under a paid subscription with standard quota; each is flagged at its point of definition, with the unconstrained alternative named alongside it.
+8. **Every specification in this document and in `DEPLOYMENT_AZURE.md` is grounded in the resource names, identifiers, and Terraform resource names actually provisioned for this project**, rather than illustrative placeholders — see Section 8 for the full identifier inventory.
 
 ---
 
@@ -27,337 +23,334 @@ This document explains why the system is built the way it is. It does not contai
 
 | Decision | Rationale |
 |---|---|
-| Azure Virtual Machine is used as the application compute host, running the existing Java and Python containers. | Preserves the project's current containerized runtime model and minimizes application-level changes while establishing an Azure implementation. |
-| Java listens on port `8081`; Python listens on port `8082` and remains internal. | Preserves the existing application interaction model: Java receives the external request and invokes Python internally. |
-| Azure API Management is the public API boundary. | Provides a managed HTTP API front door while keeping the application runtime separate from public API management concerns. |
-| Azure Container Registry stores the Java and Python container images. | Provides a native Azure registry for the immutable application artifacts consumed by the runtime host. |
-| The VM uses a Managed Identity to access Azure resources. | Removes the need to distribute Azure access keys or service-principal secrets to the runtime host. |
-| Operator access to the VM is provided through Azure Bastion (or an equivalent just-in-time access mechanism), provisioned once per environment alongside that environment's VM; no public SSH port is opened and no SSH key pair is distributed. | Authorizes shell access through Azure RBAC against the Bastion/VM resource rather than a network-exposed port or a private key file that could be lost or leaked. This removes an entire class of exposure rather than merely restricting it. |
-| DEV, UAT, and PROD are separately and persistently provisioned; each uses its own resource group, Key Vault, and PostgreSQL Flexible Server. | Keeps environment history available for debugging (an issue found in UAT can be reproduced in DEV without losing UAT), and avoids coupling environment lifecycle to a destroy/recreate cycle. The full environment topology is documented in `DEPLOYMENT_AZURE.md`; this architecture document describes the shape of a single environment, which is identical in structure across DEV, UAT, and PROD. This is a chosen release management strategy, not a structural requirement of the architecture — see Design Principle 12. |
-| GitHub Actions authenticates to Azure through OIDC and Microsoft Entra federation. | Avoids long-lived Azure credentials in GitHub and provides a short-lived workload identity for CI/CD. |
-| Azure Key Vault stores application secrets. | Separates secret material from source code, container images and ordinary environment configuration. |
-| PostgreSQL Flexible Server uses private networking. | Keeps database traffic on the Azure virtual network rather than exposing PostgreSQL directly to the public internet. |
-| Application and database networking are separated into dedicated subnets. | Provides a clear network boundary between compute and managed data services and allows subnet-level controls. |
-| Network Security Groups restrict application ingress; no inbound SSH rule is defined. | Limits access to the application host to the intended API path and to Bastion-mediated administrative traffic. No network-exposed shell port exists on the application subnet. |
-| Terraform Cloud / HCP Terraform is retained as the Terraform state and execution control plane. | Preserves the project's existing Terraform operating model while Azure becomes the infrastructure provider. |
-| Terraform state is separated by environment when multiple environments are introduced. | Prevents a change intended for one environment from operating against another environment's state. |
-| Environment-specific values are parameterized rather than duplicated infrastructure definitions. | Keeps the architecture consistent across environments while allowing CIDRs, sizes, names and other deployment values to differ. |
-| Application artifacts are immutable and promoted by image digest. | Ensures that the artifact tested and approved is the artifact deployed to subsequent environments. |
+| A single Azure Container Registry (`eaisharedacr`, resource group `eai-shared-rg`) is shared across Development, UAT, and Production, rather than one registry per environment. | Enables a genuine build-once, promote-many artifact model: an image built once from `develop` is deployed unchanged to every later environment by digest-equivalent tag, never rebuilt or re-copied between registries. Each environment's VM managed identity is granted `AcrPull` scoped directly to this one registry resource; Azure role assignments work across resource-group boundaries by scope, so the registry does not need to live inside any environment's own resource group. |
+| Interactive Key Vault secret retrieval for deployment happens from the GitHub Actions job itself, using the deploying identity's own `Key Vault Secrets User` role, rather than from the virtual machine via its managed identity. | Deliberately simpler than a VM-side read: the deployment script executed via VM Run Command only needs to write the already-resolved secret values into the environment file, not authenticate to Key Vault itself. The VM's managed identity still separately holds `Key Vault Secrets User` on its own environment's vault, for any runtime use outside the deploy path. |
+| Promotion to UAT and to Production is triggered by `workflow_dispatch` with a required `image_tag` input, not automatically by a push to the `uat` or `main` branch. | Two independent reasons converge on manual dispatch: it enforces the build-once, promote-many contract by requiring the operator to name the exact previously-built image tag rather than letting a push implicitly trigger a rebuild; and, under this subscription's environment-cycling model (Section 6), the target environment's compute may not be provisioned at the moment a branch is merged — dispatch decouples "the code is ready to promote" from "the target environment is currently up." |
+| Interactive VM access uses a narrowly-scoped NSG rule (`AllowOperatorSSH`, port 22, source restricted to a single operator IP) plus `az ssh vm`, rather than Azure Bastion. | Azure Free Tier permits three Standard public IPs per subscription. Three VM public IPs are already required — API Management's backend integration targets each VM's public IP directly, the same `HTTP_PROXY`-style pattern used for the compute instance's public exposure — leaving no quota for a further three Bastion-host public IPs (one per environment). The substitute reuses the VM's already-required public IP and the same Entra-issued ephemeral SSH certificate mechanism Bastion's "Connect with Azure AD" option uses underneath (the `AADSSHLoginForLinux` extension and the `Virtual Machine Administrator Login` role assignment), so no SSH key pair or password is introduced either way — see Section 6 for the full comparison and the paid-subscription alternative. |
+| Development and UAT are provisioned and torn down on a cycle; Production is provisioned once and then persistent. | This subscription's `Standard Bsv2 Family vCPUs` quota in the deployment region is 4; each environment's virtual machine consumes 2. Three simultaneously-provisioned environments would require 6, exceeding the quota once Production's own VM is added to Development's and UAT's. See Section 7 for the full constraint, the region-relocation alternatives evaluated and rejected, and the adopted cycling model. |
+| Compute is a single Azure Linux virtual machine running Docker Compose per environment, rather than Azure Container Apps or AKS. | Keeps each environment within Azure Free Tier bounds and structurally comparable to a minimal reference deployment. Section 4 documents the managed-container-orchestration upgrade path; it does not require rebuilding application images. |
 
 ---
 
 ## 3. Target Architecture
 
 ```mermaid
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Arial","fontSize":"16px"},"flowchart":{"nodeSpacing":30,"rankSpacing":50,"padding":10}}}%%
 flowchart TB
-    subgraph SourceControl["Source Control"]
-        GH["develop / main branches"]
+    subgraph SC["Source Control"]
+        GH["GitHub repository\nnikmar0808/enterprise-integration-azure\ndevelop / uat / main branches"]
     end
 
-    subgraph CI["CI/CD Pipeline"]
-        Scan["Secret scan (TruffleHog)<br/>Dependency/IaC scan (Trivy)"]
-        Build["Build + test<br/>Multi-stage, non-root image build"]
+    subgraph CI["CI/CD — GitHub Actions (ci.yml)"]
+        Scan["Secret scan (TruffleHog)\nDependency/IaC scan (Trivy)"]
+        Build["Build + test\nJava 21 / Python 3.14"]
         ImgScan["Image scan (Trivy)"]
         Push["Push to Azure Container Registry"]
-        Deploy["Deployment<br/>(controlled branch/environment)"]
-        Scan --> Build --> ImgScan --> Push --> Deploy
+        DeployDev["deploy-dev\n(auto, on push to develop)"]
+        PromoteUAT["promote-uat\n(workflow_dispatch, manual)"]
+        PromoteProd["promote-prod\n(workflow_dispatch, manual,\napproval-gated)"]
+        Scan --> Build --> ImgScan --> Push
+        Push --> DeployDev
     end
 
-    subgraph TFCloud["Terraform Cloud / HCP Terraform"]
-        TFRun["Plan / Apply<br/>OIDC → Azure workload identity"]
+    subgraph TFC["HCP Terraform — org MyOtg, project EAI Project Azure"]
+        TFRun["eai-dev-azure / eai-uat-azure /\neai-prod-azure / eai-shared-azure\nLocal Execution Mode — state backend only"]
     end
 
-    subgraph Azure["Azure"]
-        APIM["Azure API Management"]
-        VM["Azure Linux VM<br/>Managed Identity"]
-        Java["Ingestion service :8081"]
-        Python["Transformation service :8082<br/>internal network only"]
-        PG[("Azure Database for PostgreSQL<br/>Flexible Server")]
-        KV["Azure Key Vault<br/>secrets"]
-        ACR["Azure Container Registry"]
+    subgraph AZ["Azure Subscription — Azure_Free_Tier"]
+        SharedRG["Resource group eai-shared-rg"]
+        ACR["Azure Container Registry\neaisharedacr"]
+        SharedRG --> ACR
+
+        subgraph DevRG["Resource group eai-dev-rg"]
+            APIMd["API Management\neai-dev-apim-glbunq"]
+            VMd["VM eai-dev-host"]
+            KVd["Key Vault eai-dev-kv-glbunq"]
+            PGd[("PostgreSQL Flexible Server\neai-dev-pg-glbunq")]
+        end
+
+        subgraph UatRG["Resource group eai-uat-rg"]
+            APIMu["API Management\neai-uat-apim-glbunq"]
+            VMu["VM eai-uat-host"]
+            KVu["Key Vault eai-uat-kv-glbunq"]
+            PGu[("PostgreSQL Flexible Server\neai-uat-pg-glbunq")]
+        end
+
+        subgraph ProdRG["Resource group eai-prod-rg (persistent)"]
+            APIMp["API Management\neai-prod-apim-glbunq"]
+            VMp["VM eai-prod-host"]
+            KVp["Key Vault eai-prod-kv-glbunq"]
+            PGp[("PostgreSQL Flexible Server\neai-prod-pg-glbunq")]
+        end
     end
 
     GH -->|push, OIDC| Scan
-    GH -->|infrastructure change| TFRun
-    TFRun -->|provisions| APIM
-    TFRun -->|provisions| VM
-    TFRun -->|provisions| PG
-    TFRun -->|provisions| ACR
-    TFRun -->|provisions| KV
-    Push -->|OIDC / RBAC| ACR
-    Deploy -->|Azure deployment command| VM
-    VM -->|runs| Java
-    Java -->|internal Docker network| Python
-    Python -->|port 5432| PG
-    VM -->|Managed Identity| KV
-    VM -->|Managed Identity| ACR
-    Internet(("Public internet")) --> APIM
-    APIM -->|HTTP backend, port 8081| VM
+    GH -->|push, VCS-independent| TFRun
+    TFRun -->|provisions| DevRG
+    TFRun -->|provisions| UatRG
+    TFRun -->|provisions| ProdRG
+    TFRun -->|provisions, once| SharedRG
+    Push -->|OIDC, gha-deploy-dev-identity| ACR
+    DeployDev -->|VM Run Command| VMd
+    PromoteUAT -->|VM Run Command| VMu
+    PromoteProd -->|VM Run Command| VMp
+    VMd -->|pull image| ACR
+    VMu -->|pull image| ACR
+    VMp -->|pull image| ACR
+    VMd -->|5432| PGd
+    VMu -->|5432| PGu
+    VMp -->|5432| PGp
+    KVd -.secrets, read by CI job.-> DeployDev
+    KVu -.secrets, read by CI job.-> PromoteUAT
+    KVp -.secrets, read by CI job.-> PromoteProd
+    Internet(("Public internet")) --> APIMd
+    Internet --> APIMu
+    Internet --> APIMp
+    APIMd -->|HTTP backend :8081| VMd
+    APIMu -->|HTTP backend :8081| VMu
+    APIMp -->|HTTP backend :8081| VMp
 ```
-
-The architecture separates five responsibilities:
-
-1. **Source control** — Git repository containing application, infrastructure and deployment definitions.
-2. **Build and release** — GitHub Actions validates source, builds container artifacts and publishes them to ACR.
-3. **Infrastructure management** — Terraform provisions and maintains Azure resources.
-4. **Runtime** — the Azure Linux VM runs the Java and Python application containers.
-5. **Managed services** — API Management, Azure Container Registry, Key Vault and PostgreSQL Flexible Server provide the platform capabilities around the application runtime.
 
 ### Request flow: a single ingestion call
 
-The deployment diagram shows how the system is assembled. The following diagram shows what happens when a client makes one ingestion request:
-
 ```mermaid
-flowchart LR
-    Client(["Client<br/>(script, curl, browser)"]) -->|HTTPS request| APIM["Azure API Management"]
-    APIM -->|HTTP backend, port 8081| Java["Ingestion service"]
-    Java -->|internal network, port 8082| Python["Transformation service"]
-    Python -->|SQL write, port 5432| PG[("PostgreSQL Flexible Server")]
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Arial","fontSize":"16px"},"flowchart":{"nodeSpacing":30,"rankSpacing":50,"padding":10}}}%%
+flowchart TB
+    Client(["Client\n(script, curl, browser)"])
+    APIM["Azure API Management\nHTTP API"]
+    Java["Java ingestion service\n:8081, on VM public IP"]
+    Python["Python transformation service\n:8082, internal Docker network only"]
+    DB[("PostgreSQL Flexible Server\nprivate network")]
+
+    Client -->|HTTPS request| APIM
+    APIM -->|HTTP backend, port 8081| Java
+    Java -->|internal Docker network, port 8082| Python
+    Python -->|SQL write| DB
     Python -->|"{message, metadata, analytics_summary}"| Java
-    Java -->|response passed through| APIM
+    Java -->|response passed through unmodified| APIM
     APIM -->|HTTPS response| Client
 ```
 
-The response body received by the client is the transformation service's response shape as returned through the Java ingestion service. The Java service therefore remains responsible for authentication, validation and routing rather than introducing an additional response-transformation layer.
-
-### Azure network architecture
-
-```mermaid
-flowchart TB
-    VNET["Virtual Network<br/>10.0.0.0/16"]
-
-    subgraph APP["Application subnet 10.0.1.0/24"]
-        NSG["Network Security Group"]
-        NIC["VM Network Interface"]
-        VM["Azure Linux VM"]
-        JAVA["Java :8081"]
-        PY["Python :8082"]
-    end
-
-    subgraph DATA["Database subnet 10.0.2.0/24"]
-        PG["PostgreSQL Flexible Server :5432"]
-        DNS["Private DNS Zone"]
-    end
-
-    APIM["Azure API Management"]
-    ACR["Azure Container Registry"]
-    KV["Azure Key Vault"]
-
-    VNET --> APP
-    VNET --> DATA
-    NSG --> NIC
-    NIC --> VM
-    VM --> JAVA
-    JAVA --> PY
-    PY --> PG
-    DNS --> PG
-    APIM -->|HTTP backend| VM
-    VM -->|image pull| ACR
-    VM -->|secret access| KV
-```
-
-The application subnet contains the compute host. The database subnet is dedicated to PostgreSQL Flexible Server private access. The Python service remains an internal application component and does not receive a public ingress path.
+The response body a client receives is the transformation service's response shape, returned unmodified — the ingestion service's role is authentication, validation, and routing, not response reshaping. This mirrors the equivalent AWS-implementation behavior exactly; the application layer is cloud-agnostic and unaware of which cloud's API boundary it sits behind.
 
 ---
 
 ## 4. Excluded Scope and Future Extensions
 
-- **Azure Container Apps / AKS** — not required for the initial Azure implementation. The current architecture retains a VM-based Docker runtime so that the application runtime model remains close to the existing project.
-- **Application Gateway / Azure Load Balancer as an additional application front door** — excluded while API Management is the designated public API boundary. A different ingress architecture would be a separate design decision.
-- **Private API Management connectivity to the backend** — the initial implementation can use the required API Management-to-VM backend connectivity. A fully private backend path can be introduced as a subsequent hardening step where the selected API Management tier and network design support it.
-- **High-availability compute** — the initial design uses a single application VM. Availability Sets, VM Scale Sets or a managed container platform can be introduced when availability requirements justify the additional architecture.
-- **High-availability PostgreSQL configuration** — the initial architecture does not mandate zone-redundant or multi-server database deployment. Availability and backup requirements determine the appropriate PostgreSQL Flexible Server configuration.
-- **Azure Front Door / WAF** — excluded unless global ingress, edge acceleration or a dedicated web-application firewall boundary becomes a requirement.
-- **Azure App Configuration** — optional for centralized non-secret configuration. Key Vault remains the secret store; introducing App Configuration is not required merely to deploy the application.
-- **AKS-level orchestration** — excluded because the application does not require Kubernetes-specific scheduling, service mesh, operator or cluster-management capabilities for the current scope.
+- **Azure Container Apps / Azure Kubernetes Service** — excluded to keep the deployment within Azure Free Tier and structurally minimal. The existing container images require only a new orchestration target, not an image rebuild, when introduced.
+- **A dedicated Production subscription** — this implementation uses a single subscription (`Azure_Free_Tier`) for all three environments, isolated by resource group and RBAC scope rather than subscription boundary. A steady-state, non-learning posture would place Production in its own subscription, giving it a fully independent blast radius and its own quota window; this is a resourcing decision, not a redesign.
+- **Azure Bastion, restored** — see Section 6. Reinstating Bastion in place of the current `AllowOperatorSSH` NSG rule is the direct successor once the subscription's public-IP quota is no longer the binding constraint.
+- **Automatic promotion on branch push** — the current `workflow_dispatch`-gated promotion model is a deliberate choice (Section 2), not a limitation of the platform; a team with all three environments persistently provisioned and standard quota could safely automate `uat`/`main` push-triggered promotion.
 
 ---
 
-## Appendix A — Identity, Security, and Terraform Cloud Reference
+## 5. Shared Container Registry Model
 
-### A.1 Azure authentication layers
+Every other Azure resource in this project is environment-scoped — a separate copy exists per environment. The Container Registry is the single deliberate exception.
 
-Azure authentication is separated into distinct layers:
+To genuinely build once and promote the same image through Development → UAT → Production, rather than re-pushing or copying an image at each promotion step, all three environments must pull from the same registry. `eai-shared-rg` holds only `eaisharedacr` for this reason, provisioned once from its own HCP Terraform workspace (`eai-shared-azure`), and is never destroyed as part of any environment's provisioning or teardown lifecycle.
 
-| Layer | Function | Mechanism | Configuration location |
-|---|---|---|---|
-| 1. Human → Microsoft Entra ID | Establishes the identity of an operator or administrator | Microsoft Entra authentication | Azure tenant / identity administration |
-| 2. Human → Azure resources | Determines what an authenticated user may do | Azure RBAC | Management group, subscription, resource group or resource scope |
-| 3. GitHub Actions → Azure | Authenticates CI/CD without a stored Azure password or client secret | GitHub OIDC + Microsoft Entra federated identity | Entra application or user-assigned identity + federated credential; GitHub workflow |
-| 4. VM → Azure resources | Authenticates the application host | Managed Identity | Azure VM identity + Azure RBAC |
-| 5. Terraform Cloud → Azure | Authenticates infrastructure automation | HCP Terraform dynamic credentials / OIDC federation | Terraform Cloud workspace + Entra federated identity |
+Each environment's VM managed identity is granted `AcrPull`, scoped directly to the shared registry resource, via a cross-resource-group role assignment — Azure RBAC scope is independent of resource-group membership, so the registry does not need to live inside any environment's own resource group for this to work. The GitHub Actions deployment identity for Development additionally holds `AcrPush`, since only Development's build job produces new images; UAT's and Production's deployment identities hold no push permission at all, consistent with them never rebuilding.
 
-The important distinction is that **authentication identifies the caller while Azure RBAC authorizes the caller against a resource scope**.
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Arial","fontSize":"16px"},"flowchart":{"nodeSpacing":30,"rankSpacing":50,"padding":10}}}%%
+flowchart TB
+    ACR["eaisharedacr\nresource group: eai-shared-rg\nprovisioned once, never destroyed"]
+    GHAdev["gha-deploy-dev-identity\nAcrPush + AcrPull"]
+    GHAuat["gha-deploy-uat-identity\nAcrPull (tag existence check only)"]
+    GHAprod["gha-deploy-prod-identity\nAcrPull (tag existence check only)"]
+    VMdID["eai-dev-vm-id\nAcrPull"]
+    VMuID["eai-uat-vm-id\nAcrPull"]
+    VMpID["eai-prod-vm-id\nAcrPull"]
+
+    GHAdev -->|push + pull| ACR
+    GHAuat -->|pull, read-only| ACR
+    GHAprod -->|pull, read-only| ACR
+    VMdID -->|image pull| ACR
+    VMuID -->|image pull| ACR
+    VMpID -->|image pull| ACR
+```
+
+---
+
+## 6. Interactive Operator Access: Bastion (Intended) vs. Operator-IP SSH (Actual)
+
+Design Principle 6 states that no distributed SSH credential is ever introduced for operator access to compute. Two mechanisms satisfy that principle; this subscription runs the second one, for a quota reason stated explicitly below rather than presented as the general recommendation.
+
+### 6.1 Intended pattern — Azure Bastion (recommended for a standard-quota subscription)
+
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Arial","fontSize":"16px"},"flowchart":{"nodeSpacing":30,"rankSpacing":50,"padding":10}}}%%
+flowchart TB
+    Op["Operator"]
+    Entra["Microsoft Entra ID\nsession"]
+    RBAC["Azure RBAC\nBastion connect permission"]
+    Bastion["Azure Bastion host\n(own Standard public IP)"]
+    VM["Application VM\n(private path, no public exposure needed for this purpose)"]
+
+    Op -->|az login| Entra
+    Entra --> RBAC
+    RBAC --> Bastion
+    Bastion -->|platform-managed tunnel, no public SSH port on VM| VM
+```
+
+Under this pattern, no port on the VM's network security group needs to accept inbound traffic from an arbitrary source at all — Bastion's tunnel is fully platform-managed and not internet-routable to the VM directly. Each environment's Bastion host requires its own Standard public IP.
+
+### 6.2 Actual pattern on this subscription — `AllowOperatorSSH` + `az ssh vm`
+
+Azure Free Tier limits this subscription to three Standard public IPs. Three VM public IPs are already committed — API Management's backend integration targets each environment's VM public IP directly (Section 3's request-flow diagram), the same role a `HTTP_PROXY`-style integration plays generally. A further three Bastion-host public IPs (one per environment) would require six in total against a quota of three.
+
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Arial","fontSize":"16px"},"flowchart":{"nodeSpacing":30,"rankSpacing":50,"padding":10}}}%%
+flowchart TB
+    Op["Operator"]
+    Entra["Microsoft Entra ID\nsession, az login"]
+    RBAC["Azure RBAC\nVirtual Machine Administrator Login"]
+    NSG["NSG rule AllowOperatorSSH\nport 22, source = operator_ip_cidr /32 only"]
+    Ext["AADSSHLoginForLinux extension\n(installed on VM)"]
+    VM["Application VM\n(already-required public IP)"]
+
+    Op -->|az ssh vm| Entra
+    Entra --> RBAC
+    RBAC --> Ext
+    Op -->|reaches port 22 directly| NSG
+    NSG --> VM
+    Ext --> VM
+```
+
+No additional public IP is consumed, since the path reuses the VM's already-required public IP. No SSH key pair or password is introduced — authentication is the same Entra-issued, short-lived certificate mechanism Bastion's "Connect with Azure AD" option uses underneath, via the `AADSSHLoginForLinux` VM extension and the `Virtual Machine Administrator Login` RBAC role assignment. The genuine difference from the Bastion pattern is at the network layer: port 22 is directly internet-facing on the VM, narrowed only by the NSG source restriction to a single operator IP (`var.operator_ip_cidr`, always supplied as a `/32`, never `0.0.0.0/0`).
+
+**This is a network-exposure trade-off, not a credential trade-off.** Both patterns share identical authentication; only the reachability of port 22 itself differs. A subscription without the three-public-IP constraint should restore Bastion (Section 4) and remove the `AllowOperatorSSH` rule rather than run both permanently.
+
+---
+
+## 7. Free-Tier vCPU Quota and the Environment-Cycling Model
+
+### 7.1 The constraint
+
+This subscription's `Standard Bsv2 Family vCPUs` quota, in the deployment region, is **4**. Each environment's virtual machine (`Standard_B2s_v2`) consumes **2 vCPUs**. Three persistently coexisting environments require 6 vCPUs — attempting to provision the third environment's compute while the other two are already up fails with a quota-exceeded error from the Azure control plane, even though every non-compute resource for that third environment (resource group, networking, Key Vault, PostgreSQL Flexible Server, registry role assignments) provisions successfully.
+
+A formal quota-increase request is the conventional remedy and is not assumed available on a free-tier subscription within the timeline this project operates under.
+
+### 7.2 Region relocation — evaluated and rejected
+
+Relocating Production to a different Azure region, leaving Development and UAT in the original region, was evaluated on the theory that VM-family quota is scoped per region. Every alternate region checked was disqualified for an independent reason — PostgreSQL Flexible Server subscription-restricted in some regions, the region unsupported by the Postgres/usage API entirely in others, or the entire `Standard_B` VM family blocked for this subscription elsewhere. The conclusion reached is that this subscription's `Standard_B`-family virtual machine access is effectively allow-listed to a single region; relocating any environment to a different region is not a viable resolution here, though a different subscription's quota profile may differ.
+
+### 7.3 Adopted model: Production persistent, Development and UAT cycled
+
+Once Production's virtual machine is provisioned, it permanently consumes 2 of the 4 available vCPUs, leaving exactly 2 free — room for **one** of Development or UAT at a time, never both simultaneously alongside a persistent Production.
+
+| Environment | Lifecycle under this model |
+|---|---|
+| Production | Provisioned once, then persistent indefinitely. Never torn down as part of routine cycling. |
+| Development | Up during active development; fully deprovisioned (not merely stopped — the quota constraint is on provisioned capacity, not running state) before UAT is brought up for a promotion cycle. |
+| UAT | Up during promotion validation; not torn down until its currently-promoted artifact has completed promotion to Production, since UAT is the verified source and rollback reference for that promotion. Torn down afterward to free capacity for the next Development cycle. |
+
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Arial","fontSize":"16px"},"flowchart":{"nodeSpacing":30,"rankSpacing":50,"padding":10}}}%%
+flowchart TB
+    A["DEV up, UAT down\nactive development"]
+    B["feature validated,\nready to promote"]
+    C["DEV torn down,\nUAT provisioned"]
+    D["promote-uat, UAT validation,\npromote-prod"]
+    E["PROD promotion confirmed"]
+    F["DEV re-provisioned,\nUAT torn down"]
+
+    A --> B --> C --> D --> E --> F --> A
+```
+
+Production remains up throughout every phase of this cycle. **A paid subscription with standard Burstable v2 quota does not need this cycling discipline at all** — all three environments can be provisioned and left running concurrently, and promotion may then reasonably be automated on branch push rather than gated behind manual `workflow_dispatch`, since the target environment's compute is always guaranteed to exist.
+
+### 7.4 Effect on provisioning sequencing
+
+Infrastructure provisioning proceeds Development first, verified end-to-end, then UAT. Production's non-compute resources may be applied once UAT is confirmed working, but Production's virtual machine — and the API Management step that depends on its public IP — is deliberately deferred until Development has been torn down and the required vCPU quota is confirmed free.
+
+---
+
+## 8. Real Identifier Inventory
+
+The values below are the actual identifiers provisioned for this project, given here once as the single point of reference for every other document in this set.
+
+| Identifier | Value |
+|---|---|
+| Azure Tenant ID | `0cf62dc3-5a55-48b7-b426-0d69e11b64aa` |
+| Azure Tenant name | `marathestergmail.onmicrosoft.com` |
+| Azure Subscription ID | `39d5c2a5-e03f-48dd-b4cd-955fdcee2cb0` |
+| Azure Subscription name | `Azure_Free_Tier` |
+| Azure region | `centralindia` |
+| GitHub repository | `nikmar0808/enterprise-integration-azure` |
+| GitHub owner name / ID | `nikmar0808` / `217144230` |
+| GitHub repository name / ID | `enterprise-integration-azure` / `1366899366` |
+| HCP Terraform organization | `MyOtg` |
+| HCP Terraform project | `EAI Project Azure` |
+| HCP Terraform workspaces | `eai-dev-azure`, `eai-uat-azure`, `eai-prod-azure`, `eai-shared-azure` |
+| Resource groups | `eai-dev-rg`, `eai-uat-rg`, `eai-prod-rg`, `eai-shared-rg` |
+| VM names | `eai-dev-host`, `eai-uat-host`, `eai-prod-host` |
+| Container Registry | `eaisharedacr` (`eai-shared-rg`) |
+| Key Vault names | `eai-dev-kv-glbunq`, `eai-uat-kv-glbunq`, `eai-prod-kv-glbunq` |
+| PostgreSQL Flexible Server names | `eai-dev-pg-glbunq`, `eai-uat-pg-glbunq`, `eai-prod-pg-glbunq` |
+| API Management names | `eai-dev-apim-glbunq`, `eai-uat-apim-glbunq`, `eai-prod-apim-glbunq` |
+| Bastion host names (superseded — not currently provisioned) | `eai-dev-bastion`, `eai-uat-bastion`, `eai-prod-bastion` |
+| GitHub Actions deployment identity — Development | `gha-deploy-dev-identity`, client ID `4ea4114e-d3f1-4c10-a803-40b33a128b69` |
+| GitHub Actions deployment identity — UAT | `gha-deploy-uat-identity`, client ID `ee3d709e-2cc9-4a3c-b274-cc8f823d964c` |
+| GitHub Actions deployment identity — Production | `gha-deploy-prod-identity`, client ID `ad2adba6-7d1e-4e79-9d6d-4d7300b7581c` |
+| HCP Terraform workload identity | `tfc-run-identity`, client ID `d43edd62-9a9a-4e88-869e-d0a6ef752071` (provisioned for parity; not consumed under Local Execution Mode) |
+
+---
+
+## Appendix A — Identity, Federation, and RBAC Reference
+
+### A.1 Two federated credentials on the Development identity
+
+Microsoft Entra federated identity credentials match exactly one subject each — unlike an AWS IAM trust policy's array-based `StringLike` condition. The Development GitHub Actions identity (`gha-deploy-dev-identity`) therefore holds two separate federated credential objects, not one:
+
+| Credential | Subject shape | Used by |
+|---|---|---|
+| `github-actions-dev-ref` | `repo:<owner>@<owner-id>/<repo>@<repo-id>:ref:refs/heads/develop` | The build/push job, which declares no `environment:` key and is triggered by a plain push to `develop` |
+| `github-actions-dev-environment` | `repo:<owner>@<owner-id>/<repo>@<repo-id>:environment:dev` | The `deploy-dev` job, which declares `environment: dev` and therefore receives an environment-shaped claim regardless of branch |
+
+UAT and Production each require only the environment-shaped credential, since their respective jobs (`promote-uat`, `promote-prod`) are `workflow_dispatch`-triggered and always declare their `environment:` key.
 
 ### A.2 Identity inventory
 
-| Identity | Type | Credential mechanism | Lifespan | Permissions | Consumer |
-|---|---|---|---|---|---|
-| Azure administrator | Microsoft Entra user | Interactive Microsoft Entra authentication | Human session / tenant policy | Administrative permissions appropriate to role | Azure administration |
-| Terraform deployment identity | Microsoft Entra workload identity | HCP Terraform OIDC federation | One Terraform run | Terraform provisioning permissions within the assigned Azure scope | Terraform Cloud |
-| GitHub deployment identity | Microsoft Entra workload identity | GitHub Actions OIDC federation | One workflow job/token lifetime | ACR push and deployment permissions within the assigned scope | GitHub Actions |
-| VM managed identity | Managed Identity | Azure instance identity/token service | Lifetime of the VM identity | ACR pull, Key Vault read and other explicitly assigned permissions | Azure VM |
-| Application container | Application process | No independent Azure credential | Container lifetime | No direct Azure permission unless explicitly required | Java/Python runtime |
+| Identity | Type | Credential mechanism | Consumer |
+|---|---|---|---|
+| Operator's own Azure AD session | Human, interactive | `az login`, MFA-enforced | Every local `terraform apply` under Local Execution Mode; `az ssh vm` for interactive troubleshooting |
+| `gha-deploy-dev-identity` | Entra application + service principal | GitHub Actions OIDC | Build, image push, and Development deployment jobs |
+| `gha-deploy-uat-identity` | Entra application + service principal | GitHub Actions OIDC | UAT promotion job (read-only registry access, no push) |
+| `gha-deploy-prod-identity` | Entra application + service principal | GitHub Actions OIDC | Production promotion job (read-only registry access, no push) |
+| `tfc-run-identity` | Entra application + service principal | HCP Terraform OIDC | Provisioned for parity with the AWS-implementation pattern; not the active authentication path, since every workspace runs under Local Execution Mode |
+| Each VM's user-assigned managed identity (`eai-<env>-vm-id`) | Managed identity | Azure IMDS-equivalent, no authentication step | The compute instance exclusively — image pull and its own Key Vault's secrets |
 
-Human users should not be used as the identity of automated workloads. Workload identities should receive only the permissions required for their function.
+### A.3 RBAC grants by identity
 
-### A.3 Role separation
-
-The Azure implementation should distinguish at least these responsibilities:
-
-```mermaid
-flowchart TD
-    ADMIN["Azure Administrator"] -->|administers| AZ["Azure resources"]
-    TF["Terraform workload identity"] -->|provisions| AZ
-    GH["GitHub Actions workload identity"] -->|publishes / deploys| AZ
-    VMID["VM Managed Identity"] -->|runtime access| ACR["ACR"]
-    VMID -->|runtime access| KV["Key Vault"]
-```
-
-The exact Azure RBAC roles and scopes are deployment configuration and must be documented in `DEPLOYMENT.md` for the specific environment.
-
-### A.4 Secret access model
-
-```mermaid
-flowchart LR
-    ADMIN["Authorized operator"] --> KV["Azure Key Vault"]
-    TF["Terraform"] -->|creates/configures references| KV
-    VMID["VM Managed Identity"] -->|authorized secret read| KV
-    KV -->|secret value at runtime/deployment| VM["Azure VM"]
-    VM --> JAVA["Java container"]
-    VM --> PY["Python container"]
-```
-
-Secrets must not be committed to Git, embedded in Dockerfiles, or placed in container images. The application should receive only the secrets required for its operation.
-
-### A.5 Terraform Cloud / HCP Terraform
-
-Terraform Cloud is responsible for Terraform state and, where configured, Terraform execution. The Azure provider authenticates using the project's configured workload-identity mechanism rather than a permanent Azure access key stored in source control.
-
-The project should maintain separate Terraform workspaces for separate environments when more than one environment is deployed. The workspace names, organization and Azure scopes are deployment-specific and therefore belong in `DEPLOYMENT.md`, not as public hard-coded values in this architecture document.
-
-### A.6 Bootstrap identity dependency
-
-A circular dependency exists between HCP Terraform's OIDC federation and the resources that federation depends on: HCP Terraform cannot authenticate to Azure using a workload identity that does not yet exist, and that identity cannot be created by an HCP Terraform run, because the run itself would require the identity to authenticate.
-
-This is resolved by a one-time, locally executed bootstrap step that is architecturally and procedurally separate from the project's normal infrastructure configuration:
-
-- A human administrator, authenticated interactively through Microsoft Entra ID, applies a minimal bootstrap Terraform configuration that creates only the Microsoft Entra federated-identity application objects (or user-assigned managed identities) and their federated credentials for GitHub Actions and HCP Terraform.
-- This bootstrap configuration uses local Terraform state, not the HCP Terraform remote backend, since the backend it would need is exactly what it is establishing trust for.
-- Once the federated identities exist and are trusted, all subsequent Terraform runs — including the normal infrastructure configuration that assigns Azure RBAC roles to those identities — proceed through HCP Terraform's own OIDC federation.
-- Following the initial bootstrap, this step is not part of the regular operational workflow; it is re-run only if the federated identities are recreated.
-
-This bootstrap/main separation exists because of the circular dependency described above, not as an arbitrary structural choice — it is the minimum split that lets HCP Terraform reach a self-sufficient, federated state from nothing.
-
----
-
-## Appendix B — Application Runtime Reference
-
-### B.1 Java ingestion service
-
-The Java Spring Boot application is the externally addressed application component behind API Management.
-
-Responsibilities:
-
-- accept the ingestion request;
-- authenticate/validate the request according to application configuration;
-- parse the incoming JSON payload;
-- map the request to the application's `SmartMeterPayload` representation;
-- invoke the Python transformation service;
-- return the transformation response.
-
-The Java service listens on port `8081` in the deployed container runtime.
-
-### B.2 Python transformation service
-
-The Python FastAPI application performs the transformation and persistence responsibilities.
-
-Responsibilities:
-
-- receive validated input from the Java service;
-- map the payload into the Pydantic model;
-- execute transformation logic;
-- obtain database connectivity through the application's PostgreSQL connection layer;
-- persist the transformed data;
-- return the transformation result.
-
-The Python service listens on port `8082` in the deployed container runtime and is not intended to be a public API boundary.
-
-### B.3 Database
-
-Azure Database for PostgreSQL Flexible Server provides the managed PostgreSQL database.
-
-The database is reachable from the application network on port `5432`. The production design should use private networking and should not require the database to be directly reachable from the public internet.
-
-### B.4 Container images
-
-The application produces two principal container artifacts:
-
-| Artifact | Purpose |
-|---|---|
-| `eai-java-gateway` | Java Spring Boot ingestion service |
-| `eai-python-validator` | Python FastAPI transformation service |
-
-The exact registry name and repository URL are deployment-specific values and are therefore represented as placeholders in third-party-facing deployment documentation.
-
----
-
-## Appendix C — Configuration Boundaries
-
-The system separates configuration into four categories:
-
-| Configuration type | Example | Source |
+| Identity | Grant | Scope |
 |---|---|---|
-| Application defaults | Port, application behavior, non-sensitive defaults | Application source/configuration |
-| Environment configuration | Endpoint names, environment-specific flags, sizing | Terraform/environment configuration |
-| Secrets | Database password, API token, certificates where applicable | Azure Key Vault |
-| Infrastructure configuration | VNet CIDR, subnet CIDR, VM size, resource names | Terraform |
+| `gha-deploy-dev-identity` | `AcrPush` | `eaisharedacr` |
+| `gha-deploy-dev-identity` | `Virtual Machine Contributor` | `eai-dev-host` |
+| `gha-deploy-dev-identity` | `Key Vault Secrets User` | `eai-dev-kv-glbunq` |
+| `gha-deploy-uat-identity` | `AcrPull` | `eaisharedacr` (tag-existence confirmation before promotion) |
+| `gha-deploy-uat-identity` | `Virtual Machine Contributor` | `eai-uat-host` |
+| `gha-deploy-uat-identity` | `Key Vault Secrets User` | `eai-uat-kv-glbunq` |
+| `gha-deploy-prod-identity` | `AcrPull` | `eaisharedacr` |
+| `gha-deploy-prod-identity` | `Virtual Machine Contributor` | `eai-prod-host` |
+| `gha-deploy-prod-identity` | `Key Vault Secrets User` | `eai-prod-kv-glbunq` |
+| Each VM's managed identity | `AcrPull` | `eaisharedacr` |
+| Each VM's managed identity | `Key Vault Secrets User` | Its own environment's Key Vault only |
+| Operator's Entra session | `Virtual Machine Administrator Login` | Each VM individually |
 
-A configuration value that differs between environments must not require a separate copy of the application source or Docker image.
+`Virtual Machine Contributor`, used for the deployment identities' Run Command invocation, is broader than the single action actually required (`Microsoft.Compute/virtualMachines/runCommand/action`) — Azure has no built-in role scoped to exactly that action. A custom role restricted to it is the tighter alternative where the setup cost is justified; this project uses the built-in role, consistent with a general preference for built-in roles over hand-authored least-privilege policies where Azure RBAC (unlike AWS IAM) does not require one to reach a workable scope.
 
----
+### A.4 Request flow traces
 
-## Appendix D — Security Boundaries
+**1. Infrastructure change, any environment.** The operator authenticates via `az login`; the `azurerm` provider falls back to this active CLI session automatically, since no `ARM_*` environment variables or explicit provider arguments are present. `terraform apply` runs locally against the target workspace; HCP Terraform receives and stores the resulting state only.
 
-The principal security boundaries are:
+**2. Image build and push (Development only).** The `docker-build-push` job requests an OIDC token from GitHub's identity provider; `azure/login@v2` presents it against `gha-deploy-dev-identity`'s ref-shaped federated credential; Entra ID issues a short-lived access token scoped by the identity's RBAC grants; the job authenticates to `eaisharedacr` and pushes both application images tagged by commit SHA.
 
-```mermaid
-flowchart TD
-    INTERNET["Public Internet"] --> APIM["API Management"]
-    APIM --> VM["Application VM"]
-    VM --> JAVA["Java :8081"]
-    JAVA --> PY["Python :8082"]
-    PY --> PG["PostgreSQL :5432"]
+**3. Deployment to Development (automatic).** The `deploy-dev` job, triggered by the same push, authenticates via the environment-shaped federated credential; reads `eai-dev-kv-glbunq`'s two secrets under its own `Key Vault Secrets User` grant; and invokes `az vm run-command invoke` against `eai-dev-host` under its `Virtual Machine Contributor` grant. The VM's managed identity is used only inside the Run Command script itself, to authenticate the VM's own `docker login` against the shared registry.
 
-    ID["Microsoft Entra ID / Azure RBAC"] --> VM
-    ID --> KV["Key Vault"]
-    ID --> ACR["ACR"]
-    ID --> BASTION["Azure Bastion"]
+**4. Promotion to UAT or Production (manual).** An operator triggers `workflow_dispatch` with an explicit `image_tag`. The corresponding promotion job confirms the tag exists in `eaisharedacr` (using its own read-only `AcrPull` grant), reads that environment's Key Vault secrets, and deploys via `az vm run-command invoke` — structurally identical to Development's deployment, but never preceded by a build step.
 
-    BASTION -->|operator session, no public SSH| VM
-    VM --> ACR
-    VM --> KV
-```
+### A.5 Summary
 
-The public boundary terminates at API Management. The application host is protected by Azure networking controls and exposes no network-reachable shell port; interactive operator access is mediated by Azure Bastion and authorized through Azure RBAC. The Python service is internal. The database is isolated behind the database subnet and private networking. Azure resource access is governed by Entra identities and RBAC.
-
----
-
-## Appendix E — Design Invariants
-
-The following properties are intended to remain true as the implementation evolves:
-
-1. The public API boundary is separate from the application runtime.
-2. The Python transformation service is not publicly exposed.
-3. PostgreSQL is a managed database service rather than an application container.
-4. Secrets are outside Git and container images.
-5. CI/CD uses workload identity rather than long-lived Azure credentials.
-6. Runtime access uses Managed Identity where Azure resource access is required.
-7. Infrastructure is reproducible from Terraform.
-8. Terraform state is not stored in the Git repository.
-9. Application artifacts are immutable and identifiable by digest.
-10. Environment-specific configuration is separated from application source.
-11. Human administrative access is separated from automated workload access.
-12. The architecture can be operated without requiring a developer workstation to be the production source of truth.
-13. No network-exposed shell port exists on the application host; operator access is bastion-mediated and authorized through Azure RBAC.
-14. DEV, UAT and PROD are separately and persistently provisioned; promoting between them redeploys an immutable image digest and never requires destroying another environment's infrastructure or data. This is the reference release management strategy documented here — see Design Principle 12 for how a third party may substitute a different one.
+Every non-human identity in this system is an Entra application/service principal or a VM managed identity, reached exclusively via OIDC federation or Azure's platform-managed identity mechanism — never a stored client secret. RBAC role assignments are scoped per environment and per resource wherever Azure's role catalog permits it, with one broader grant (`Virtual Machine Contributor`) accepted as a built-in-role trade-off rather than a custom role. No long-lived Azure credential exists in this system at any point.

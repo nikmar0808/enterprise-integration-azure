@@ -1,6 +1,6 @@
-# .gitignore — additions on top of what you already have
+# .gitignore
 .env
-.env.*
+infra/.env
 **/target/
 **/.pytest_cache/
 **/__pycache__/
@@ -14,8 +14,7 @@ misc
 eai-project-key
 
 # NEW — Terraform state/caches. .terraform/ is regeneratable via `terraform init`;
-# *.tfstate can contain plaintext resource attributes (including, after Phase 5,
-# the RDS password if you ever inspect state locally) — Terraform Cloud already
+# *.tfstate can contain plaintext resource attributes — Terraform Cloud already
 # holds the real state remotely, so nothing of value is lost by ignoring local copies.
 **/.terraform/
 *.tfstate
@@ -23,7 +22,7 @@ eai-project-key
 crash.log
 crash.*.log
 *.tfvars
-!*.tfvars.example
+!*.tfvars.sample
 
 *.class
 *.jar

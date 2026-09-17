@@ -16,12 +16,12 @@ provider "azurerm" {
   features {}
 }
 
-# Used by networking.tf's AllowOperatorSSH rule — the Bastion replacement
-# described there. Must be a narrow CIDR (ideally a /32), never 0.0.0.0/0.
-variable "operator_ip_cidr" {
-  description = "Operator's public IP, as a /32 CIDR, permitted to reach the VM's SSH port directly."
-  type        = string
-}
+# # Used by networking.tf's AllowOperatorSSH rule — the Bastion replacement
+# # described there. Must be a narrow CIDR (ideally a /32), never 0.0.0.0/0.
+# variable "operator_ip_cidr" {
+#   description = "Operator's public IP, as a /32 CIDR, permitted to reach the VM's SSH port directly."
+#   type        = string
+# }
 
 resource "azurerm_resource_group" "dev" {
   name     = "eai-dev-rg"
@@ -33,6 +33,6 @@ resource "azurerm_resource_group" "dev" {
 # and therefore a different state file — referenced here by data source
 # rather than a resource, since this workspace does not manage it.
 data "azurerm_container_registry" "shared" {
-  name                = "eaisharedacr"
+  name                = var.acr_name
   resource_group_name = "eai-shared-rg"
 }
