@@ -140,7 +140,7 @@ foreach ($ns in $providers) { Write-Output "$ns`: $(az provider show --namespace
 
 A one-time, locally-applied, separate-state Terraform root creates only the Entra applications, service principals, and federated identity credentials described in `ARCHITECTURE_AZURE.md` Appendix A — no application infrastructure. This resolves the same circularity a remote Terraform run would otherwise face: an identity cannot be used to authenticate the very Terraform run that creates it.
 
-**File to create:** `infra/bootstrap/main.tf`.
+**File to modify:** `infra/bootstrap/main.tf`.
 
 ```hcl
 terraform {
@@ -315,7 +315,7 @@ A DNS resolution failure (`NXDOMAIN` / no output) for the PostgreSQL and API Man
 
 ### 2.2 Shared Container Registry
 
-**File to create:** `infra/shared/main.tf`, applied against workspace `<HCP_TERRAFORM_WORKSPACE_SHARED>`.
+**File to modify:** `infra/shared/main.tf`, applied against workspace `<HCP_TERRAFORM_WORKSPACE_SHARED>`.
 
 ```hcl
 terraform {
@@ -335,7 +335,7 @@ provider "azurerm" {
   features {}
 }
 ```
-**File to create:** `infra/shared/acr.tf`, applied against workspace `<HCP_TERRAFORM_WORKSPACE_SHARED>`.
+**File to modify:** `infra/shared/acr.tf`, applied against workspace `<HCP_TERRAFORM_WORKSPACE_SHARED>`.
 
 resource "azurerm_container_registry" "eai_acr" {
   name                = "<AZURE_ACR_NAME>"
@@ -375,7 +375,7 @@ terraform apply
 
 ### 2.3 Development networking
 
-**File to create:** `infra/dev/main.tf` — backend, provider, and the operator-IP variable consumed by the SSH-access NSG rule below.
+**File to modify:** `infra/dev/main.tf` — backend, provider, and the operator-IP variable consumed by the SSH-access NSG rule below.
 
 ```hcl
 terraform {
@@ -420,7 +420,7 @@ data "azurerm_container_registry" "shared" {
 }
 ```
 
-**File to create:** `infra/dev/networking.tf`.
+**File to modify:** `infra/dev/networking.tf`.
 
 ```hcl
 resource "azurerm_virtual_network" "dev" {
@@ -536,7 +536,7 @@ resource "azurerm_network_interface" "vm" {
 
 ### 2.4 Development managed identity
 
-**File to create:** `infra/dev/identity.tf`.
+**File to modify:** `infra/dev/identity.tf`.
 
 ```hcl
 resource "azurerm_user_assigned_identity" "vm" {
@@ -546,17 +546,58 @@ resource "azurerm_user_assigned_identity" "vm" {
 }
 
 # Pull-only access to the shared registry — the VM never needs push
-# permission.
+# permission, matching the AWS EC2 instance role's pull-only ECR scope.
 resource "azurerm_role_assignment" "vm_acr_pull" {
   scope                = data.azurerm_container_registry.shared.id
   role_definition_name = "AcrPull"
   principal_id         = azurerm_user_assigned_identity.vm.principal_id
 }
+
+data "azuread_service_principal" "gha_deploy_dev" {
+  client_id = var.gha_deploy_client_id
+}
+
+# Only DEV builds and pushes images — matches AWS's gha-deploy-role-dev
+# being the only one of the three roles with ECR push permission. 
+# The GitHub Actions workflow is configured to fail if it tries to push 
+# to ACR from those environments.
+###########################################################################
+#                                                                         #
+# This resource is not configured for UAT or PROD because                 #
+# those environments' builds are read-only and do not push images to ACR. #
+#                                                                         #
+###########################################################################
+resource "azurerm_role_assignment" "gha_dev_acr_push" {
+  scope                = data.azurerm_container_registry.shared.id
+  role_definition_name = "AcrPush"
+  principal_id         = data.azuread_service_principal.gha_deploy_dev.object_id
+}
+
+# Grants only the ability to invoke Run Command against this one VM — not
+# Contributor on the resource group, not access to any other environment's
+# VM. This is the Azure equivalent of AWS's ssm:SendCommand statement
+# scoped by ssm:resourceTag/Name to one tagged instance.
+resource "azurerm_role_assignment" "gha_dev_vm_runcommand" {
+  scope                = azurerm_linux_virtual_machine.dev.id
+  role_definition_name = "Virtual Machine Contributor"
+  principal_id         = data.azuread_service_principal.gha_deploy_dev.object_id
+}
+
+# Required by the deploy-dev job (Section 11.2), which reads the two Key
+# Vault secrets from within the GitHub Actions runner rather than on the VM.
+resource "azurerm_role_assignment" "gha_dev_kv_secrets_user" {
+  scope                = azurerm_key_vault.dev.id
+  role_definition_name = "Key Vault Secrets User"
+  principal_id         = data.azuread_service_principal.gha_deploy_dev.object_id
+}
+
+output "vm_identity_client_id" { value = azurerm_user_assigned_identity.vm.client_id }
+
 ```
 
 ### 2.5 Development Key Vault
 
-**File to create:** `infra/dev/key-vault.tf`.
+**File to modify:** `infra/dev/key-vault.tf`.
 
 ```hcl
 data "azurerm_client_config" "current" {}
@@ -613,6 +654,8 @@ Key Vault data-plane access uses Azure RBAC (`rbac_authorization_enabled = true`
 
 ### 2.6 Azure Bastion — not provisioned
 
+**Check Note on `az ssh vm` provisioning in Section 2.10.**
+
 **`infra/dev/bastion.tf` — retained commented out.** This is the recommended pattern for a subscription with standard public-IP quota, and the direct successor once this subscription's constraint (`ARCHITECTURE_AZURE.md`, Section 6) is no longer binding:
 
 ```hcl
@@ -639,19 +682,6 @@ Key Vault data-plane access uses Azure RBAC (`rbac_authorization_enabled = true`
 # }
 ```
 
-**Provisioned instead — `az ssh vm` over the VM's own public IP**, using the same Entra-issued ephemeral SSH certificate mechanism Bastion's "Connect with Azure AD" option uses underneath (Section 2.8 provisions the extension and role assignment this depends on):
-
-```bash
-# bash
-az extension add --upgrade -n ssh
-az ssh vm --resource-group eai-dev-rg --name eai-dev-host
-```
-```powershell
-# PowerShell equivalent
-az extension add --upgrade -n ssh
-az ssh vm --resource-group eai-dev-rg --name eai-dev-host
-```
-
 ### 2.7 Development PostgreSQL Flexible Server
 
 Confirm SKU availability for this subscription and region before writing the resource block — Flexible Server capacity restrictions surface only at creation time, not in the list output, so this check confirms the SKU is a valid choice in the region but not that it is guaranteed unrestricted:
@@ -665,7 +695,7 @@ az postgres flexible-server list-skus --location centralindia --output table
 az postgres flexible-server list-skus --location centralindia --output table
 ```
 
-**File to create:** `infra/dev/postgresql.tf`.
+**File to modify:** `infra/dev/postgresql.tf`.
 
 ```hcl
 resource "azurerm_private_dns_zone" "postgres" {
@@ -723,7 +753,7 @@ az vm list-skus --location centralindia --size Standard_B --all --query "[].{Nam
 
 Every classic (v1) B-series size shows `RestrictionType: Location` for this subscription in this region — genuinely blocked region-wide, not a transient shortage. The v2 generation shows `RestrictionType: Zone` only, which does not affect this deployment since no `zone` is pinned on the VM resource; `Standard_B2s_v2` is the smallest v2 size available.
 
-**File to create:** `infra/dev/compute.tf`.
+**File to modify:** `infra/dev/compute.tf`.
 
 ```hcl
 # Required by azurerm_linux_virtual_machine's mandatory auth block — this
@@ -819,6 +849,7 @@ resource "azurerm_role_assignment" "vm_admin_login" {
 # Installs Azure AD authentication on the VM itself — the mechanism behind
 # both the Bastion "Connect with Azure AD" option and the az ssh vm
 # substitute actually used on this subscription.
+# Used in Section 2.10
 resource "azurerm_virtual_machine_extension" "aad_login" {
   name                       = "AADSSHLoginForLinux"
   virtual_machine_id         = azurerm_linux_virtual_machine.dev.id
@@ -834,83 +865,9 @@ output "vm_public_ip" { value = azurerm_public_ip.vm.ip_address }
 
 The `custom_data` script disables Ubuntu's unattended-upgrade timers before any `apt-get` call, installs Docker CE from Docker's own repository rather than the `docker.io` package, and installs the Azure CLI — all three fixes were required for the bootstrap script to complete reliably on Ubuntu 24.04 LTS.
 
-### 2.9 Development GitHub Actions RBAC
+### 2.9 API Management
 
-**Append to `infra/dev/identity.tf`:**
-
-```hcl
-data "azuread_service_principal" "gha_deploy_dev" {
-  client_id = "<AZURE_CLIENT_ID_DEV>"
-}
-
-# Only Development builds and pushes images.
-resource "azurerm_role_assignment" "gha_dev_acr_push" {
-  scope                = data.azurerm_container_registry.shared.id
-  role_definition_name = "AcrPush"
-  principal_id         = data.azuread_service_principal.gha_deploy_dev.object_id
-}
-
-resource "azurerm_role_assignment" "gha_dev_acr_pull" {
-  scope                = data.azurerm_container_registry.shared.id
-  role_definition_name = "AcrPull"
-  principal_id         = data.azuread_service_principal.gha_deploy_dev.object_id
-}
-
-# Grants only the ability to invoke Run Command against this one VM — not
-# Contributor on the resource group, not access to any other environment's
-# VM.
-resource "azurerm_role_assignment" "gha_dev_vm_runcommand" {
-  scope                = azurerm_linux_virtual_machine.dev.id
-  role_definition_name = "Virtual Machine Contributor"
-  principal_id         = data.azuread_service_principal.gha_deploy_dev.object_id
-}
-
-# Required because Key Vault secret reads happen from the GitHub Actions
-# job itself (ARCHITECTURE_AZURE.md Section 2), not from inside the VM.
-resource "azurerm_role_assignment" "gha_dev_kv_secrets_user" {
-  scope                = azurerm_key_vault.dev.id
-  role_definition_name = "Key Vault Secrets User"
-  principal_id         = data.azuread_service_principal.gha_deploy_dev.object_id
-}
-
-output "vm_identity_client_id" { value = azurerm_user_assigned_identity.vm.client_id }
-```
-
-### 2.10 Apply Development infrastructure
-
-```bash
-# bash — run from: <repo-root>/infra/dev
-cd infra/dev
-terraform init
-terraform plan -var="operator_ip_cidr=<OPERATOR_IP>/32"
-terraform apply -var="operator_ip_cidr=<OPERATOR_IP>/32"
-terraform output -raw postgres_fqdn
-terraform output -raw vm_public_ip
-```
-```powershell
-# PowerShell equivalent — run from: <repo-root>\infra\dev
-Set-Location infra\dev
-terraform init
-terraform plan -var="operator_ip_cidr=<OPERATOR_IP>/32"
-terraform apply -var="operator_ip_cidr=<OPERATOR_IP>/32"
-terraform output -raw postgres_fqdn
-terraform output -raw vm_public_ip
-```
-
-Standard Ubuntu Azure Marketplace images ship with the Azure VM Agent pre-installed and running from first boot, so no separate agent-installation step is required before Run Command is usable — worth a one-line confirmation regardless:
-
-```bash
-# bash
-az vm run-command invoke --resource-group eai-dev-rg --name eai-dev-host --command-id RunShellScript --scripts "echo agent-check-ok"
-```
-```powershell
-# PowerShell equivalent
-az vm run-command invoke --resource-group eai-dev-rg --name eai-dev-host --command-id RunShellScript --scripts "echo agent-check-ok"
-```
-
-If this returns `agent-check-ok`, Run Command is functioning and Phase 4's deployment step will work.
-
-**Applying Development's API Management** requires the VM's public IP, already available from the apply above. **File to create:** `infra/dev/api-management.tf`.
+**File to modify:** `infra/dev/api-management.tf`.
 
 ```hcl
 resource "azurerm_api_management" "dev" {
@@ -961,20 +918,52 @@ output "apim_gateway_url" { value = azurerm_api_management.dev.gateway_url }
 
 Operations are declared per-route explicitly rather than through a wildcard template — API Management's template language does not accept `/*` as a catch-all; the correct wildcard syntax is `/{*path}` with an accompanying `template_parameter` block, and this project's confirmed-working configuration uses explicit routes instead.
 
+### 2.10 Apply and Verify Development infrastructure
+
+```bash
+# bash — run from: <repo-root>/infra/dev
+cd infra/dev
+terraform init
+terraform plan -var="operator_ip_cidr=<OPERATOR_IP>/32"
+terraform apply -var="operator_ip_cidr=<OPERATOR_IP>/32"
+```
+```powershell
+# PowerShell equivalent — run from: <repo-root>\infra\dev
+Set-Location infra\dev
+terraform init
+terraform plan -var="operator_ip_cidr=<OPERATOR_IP>/32"
+terraform apply -var="operator_ip_cidr=<OPERATOR_IP>/32"
+```
+
+Standard Ubuntu Azure Marketplace images ship with the Azure VM Agent pre-installed and running from first boot, so no separate agent-installation step is required before Run Command is usable — worth a one-line confirmation regardless:
+
+**Record all the Output values once TFC Apply finishes. Some of them will be set in Github or used in subsequent sections"**
+
+Run the following commands:
+
 ```bash
 # bash
 cd infra/dev
-terraform apply -var="operator_ip_cidr=<OPERATOR_IP>/32"
-terraform output -raw apim_gateway_url
+az vm run-command invoke --resource-group eai-dev-rg --name eai-dev-host --command-id RunShellScript --scripts "echo agent-check-ok"
 ```
 ```powershell
 # PowerShell equivalent
 Set-Location infra\dev
-terraform apply -var="operator_ip_cidr=<OPERATOR_IP>/32"
-terraform output -raw apim_gateway_url
+az vm run-command invoke --resource-group eai-dev-rg --name eai-dev-host --command-id RunShellScript --scripts "echo agent-check-ok"
 ```
 
-**Record `apim_gateway_url`** — expected shape `https://<AZURE_APIM_NAME_DEV>.azure-api.net`, required for Phase 4's verification step.
+```bash
+# bash
+az extension add --upgrade -n ssh
+az ssh vm --resource-group eai-dev-rg --name eai-dev-host
+```
+```powershell
+# PowerShell equivalent
+az extension add --upgrade -n ssh
+az ssh vm --resource-group eai-dev-rg --name eai-dev-host
+```
+
+**DO NOT PROCEED unless the first command shows `echo agent-check-ok` and the second command establishes a successful connection with the VM.**
 
 **Free-tier quota note carried forward to Phase 3:** this subscription's `Standard Bsv2 Family vCPUs` quota is 4, and Development's VM alone consumes 2. Provisioning UAT's VM next (Phase 3) is within quota; provisioning Production's VM afterward, while Development and UAT both remain up, is not — see `ARCHITECTURE_AZURE.md` Section 7 and Phase 3.7 below for the full constraint and the deferral it requires. A subscription with standard Burstable v2 quota does not need to observe this deferral and may provision all three environments' compute concurrently.
 
@@ -1113,7 +1102,7 @@ Create GitHub Environments `dev` (no required reviewer), `uat` (one required rev
 
 ### 4.1 Production Docker Compose definition
 
-**File to create:** `infra/docker-compose.prod.yml`. One file, shared across all three environments — the values injected at deploy time (Section 4.2) differ per environment; the file's shape does not.
+**File to modify:** `infra/docker-compose.prod.yml`. One file, shared across all three environments — the values injected at deploy time (Section 4.2) differ per environment; the file's shape does not.
 
 ```yaml
 networks:
@@ -1144,7 +1133,7 @@ services:
 
 ### 4.2 GitHub Actions workflow
 
-**File to create:** `.github/workflows/ci.yml`. This is a single workflow file containing every job for every environment — Development's automatic build-and-deploy, and UAT's and Production's manually-dispatched promotion jobs alike. There is no separate `promote.yml`; `promote-uat` and `promote-prod` are `workflow_dispatch`-triggered jobs defined within this same file.
+**File to modify:** `.github/workflows/ci.yml`. This is a single workflow file containing every job for every environment — Development's automatic build-and-deploy, and UAT's and Production's manually-dispatched promotion jobs alike. There is no separate `promote.yml`; `promote-uat` and `promote-prod` are `workflow_dispatch`-triggered jobs defined within this same file.
 
 ```yaml
 name: CI
