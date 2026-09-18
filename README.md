@@ -1,4 +1,4 @@
-# Enterprise Integration Project — Azure Implementation
+# Enterprise Integration Pipeline — DevOps, Java, Python, Postgres, SpringBoot, FastAPI, Github, Docker Compose, CI, Release Management, Azure Free-tier, Terraform IaC
 
 This project implements a small enterprise integration flow in which a Java Spring Boot service receives smart-meter data, validates and forwards the payload to a Python transformation API, and persists the resulting data in PostgreSQL.
 
