@@ -21,11 +21,11 @@ flowchart TB
 
 The Java service provides the ingestion boundary. The Python service performs transformation and persistence-related processing. PostgreSQL provides the application data store.
 
-Full design rationale is documented in [`ARCHITECTURE_AZURE.md`](ARCHITECTURE_AZURE.md). Infrastructure inventory and identity relationships are documented in [`INFRA_VIEW_AZURE.md`](INFRA_VIEW_AZURE.md). Step-by-step deployment instructions are documented in [`DEPLOYMENT_AZURE.md`](DEPLOYMENT_AZURE.md).
+Full design rationale is documented in [`ARCHITECTURE_AZURE.md`](docs/ARCHITECTURE_AZURE.md). Infrastructure inventory and identity relationships are documented in [`INFRA_VIEW_AZURE.md`](docs/INFRA_VIEW_AZURE.md). Step-by-step deployment instructions are documented in [`DEPLOYMENT_AZURE.md`](docs/DEPLOYMENT_AZURE.md).
 
 ## Local quickstart
 
-Requires Docker and Docker Compose. No Azure account is needed for this path — it verifies the application layer independently of the cloud deployment. `docker-compose.dev.yml` builds the application images from source and includes a containerized PostgreSQL instance; it is distinct from `infra/docker-compose.prod.yml`, used only by the deployed Azure environments (see [`DEPLOYMENT_AZURE.md`](DEPLOYMENT_AZURE.md)).
+Requires Docker and Docker Compose. No Azure account is needed for this path — it verifies the application layer independently of the cloud deployment. `docker-compose.dev.yml` builds the application images from source and includes a containerized PostgreSQL instance; it is distinct from `infra/docker-compose.prod.yml`, used only by the deployed Azure environments (see [`DEPLOYMENT_AZURE.md`](docs/DEPLOYMENT_AZURE.md)).
 
 ```bash
 # Run from the repository root
@@ -56,7 +56,7 @@ Invoke-RestMethod -Uri http://localhost:8081/api/v1/ingest/bulk -Method Post -Co
 
 ## Testing a deployed environment
 
-Once deployed to Azure (see [`DEPLOYMENT_AZURE.md`](DEPLOYMENT_AZURE.md)), the same ingestion endpoint is reached through that environment's API Management gateway URL rather than `localhost`.
+Once deployed to Azure (see [`DEPLOYMENT_AZURE.md`](docs/DEPLOYMENT_AZURE.md)), the same ingestion endpoint is reached through that environment's API Management gateway URL rather than `localhost`.
 
 ```powershell
 # Run from: <REPO_NAME>/infra/<env>
@@ -111,13 +111,12 @@ Azure infrastructure is defined using Terraform, backed by HCP Terraform remote 
 
 Items tracked ahead of treating this implementation as complete:
 
-1. **Revert the temporary vulnerability-scan bypass.** The CI workflow's image-scan steps currently run with a non-failing exit code, so CRITICAL/HIGH findings are logged but do not fail the build — a deliberate, temporary trade-off made during initial pipeline setup. See `DEPLOYMENT_AZURE.md`'s CI/CD phase for the exact lines to revert.
+1. React.js, Node.js
 2. **Restore Azure Bastion.** The current interactive-access path substitutes a narrowly-scoped SSH rule for Bastion, due to a free-tier public-IP constraint on the executing subscription — see `ARCHITECTURE_AZURE.md`, Section 6, for the constraint and the restoration path on a standard-quota subscription.
 3. **Automate promotion on branch push.** The current `workflow_dispatch`-gated promotion model is deliberate under this subscription's environment-cycling constraint (`ARCHITECTURE_AZURE.md`, Section 7); a subscription able to keep all three environments persistently provisioned can safely automate `uat`/`main` push-triggered promotion instead.
-4. **Externalize configuration currently embedded in tracked files.** See `RELEASE_NOTES_v2.md` (or the corresponding section of this repository's change log, once introduced) for the specific `.tf`/`.env`/`ci.yml` externalization work tracked as the next release.
 
 ## Documentation
 
-- [`ARCHITECTURE_AZURE.md`](ARCHITECTURE_AZURE.md) — design principles, architecture decisions, and the identity/security model
-- [`DEPLOYMENT_AZURE.md`](DEPLOYMENT_AZURE.md) — instructions to deploy the project to an independent Azure subscription
-- [`INFRA_VIEW_AZURE.md`](INFRA_VIEW_AZURE.md) — infrastructure inventory and relationships
+- [`ARCHITECTURE_AZURE.md`](docs/ARCHITECTURE_AZURE.md) — design principles, architecture decisions, and the identity/security model
+- [`DEPLOYMENT_AZURE.md`](docs/DEPLOYMENT_AZURE.md) — instructions to deploy the project to an independent Azure subscription
+- [`INFRA_VIEW_AZURE.md`](docs/INFRA_VIEW_AZURE.md) — infrastructure inventory and relationships
