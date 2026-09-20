@@ -9,13 +9,13 @@ This implementation targets Microsoft Azure and is deliberately structured as a 
 ## 1. Design Principles
 
 1. **CI/CD performs all deployment and promotion actions.** A push to `develop` builds, scans, and deploys to Development automatically. Promotion to UAT and to Production is triggered manually, via `workflow_dispatch`, rather than automatically on a branch push — see Principle 7 and Section 2 for why.
-2. **No long-lived Azure credentials are used by any automated identity.** GitHub Actions authenticates to Azure exclusively via OpenID Connect (OIDC) and Microsoft Entra ID federated identity credentials; no client secret is stored in GitHub. HCP Terraform's own workload identity is provisioned identically for parity with the GitHub Actions identity model, but is not the active authentication path under this project's chosen Execution Mode — see Principle 3.
+2. **No long-lived Azure credentials are used by any automated identity.** GitHub Actions authenticates to Azure exclusively via OpenID Connect (OIDC) and Microsoft Entra ID federated identity credentials; no client secret is stored in GitHub. HCP Terraform's workload identities (one per environment workspace) are provisioned for parity with the GitHub Actions identity model, but are not the active authentication path under this project's chosen Execution Mode — see Principle 3.
 3. **All four HCP Terraform workspaces (`eai-dev-azure`, `eai-uat-azure`, `eai-prod-azure`, `eai-shared-azure`) use Local Execution Mode.** Every `terraform apply` runs from the operator's own machine, authenticated by an interactive `az login` session; HCP Terraform is used solely as the remote state backend. Under Local Execution Mode, the `ARM_CLIENT_ID` / `ARM_TENANT_ID` / `ARM_SUBSCRIPTION_ID` / `ARM_USE_OIDC` workspace variables that a Remote- or Agent-mode workspace would require are not applicable and are not configured — HCP Terraform never itself executes a plan or apply under this mode.
 4. **Identity is isolated per environment, not shared behind multiple trust conditions.** GitHub Actions deployment identity is represented by three separate Microsoft Entra application registrations — one per environment — rather than one shared application with three federated identity credentials. Azure RBAC role assignments are scoped to the service principal, not to which federated credential authenticated it; a single shared application would mean any RBAC grant made to it is usable regardless of which environment's GitHub context obtained the token, defeating per-environment isolation. This is the direct Azure counterpart to a hypothetical AWS design using three separate IAM roles rather than one shared role with three trust-policy conditions.
 5. **The container registry is the one deliberate exception to per-environment resource isolation.** A single Azure Container Registry, provisioned in its own resource group and its own HCP Terraform workspace, is shared across all three environments so that an image is built once and the identical image is promoted through Development, UAT, and Production — see Section 5.
 6. **Interactive operator access to compute is authenticated through Microsoft Entra ID, never a distributed credential.** No SSH key pair or password is provisioned for any virtual machine. The originally intended mechanism is Azure Bastion; the mechanism actually in force on this subscription is a narrowly-scoped SSH rule reached through the same Entra-issued ephemeral certificate — see Section 3 and Section 6 for the full rationale and the free-tier constraint that produced this substitution.
 7. **Resource and compute capacity on this subscription is materially constrained by Azure Free Tier limits**, specifically a four-vCPU regional quota on the Burstable v2 VM family and a three-public-IP-per-subscription ceiling. Both constraints shape decisions documented in Section 6 and Section 7 that would not be necessary under a paid subscription with standard quota; each is flagged at its point of definition, with the unconstrained alternative named alongside it.
-8. **Every specification in this document and in `DEPLOYMENT_AZURE.md` is grounded in the resource names, identifiers, and Terraform resource names actually provisioned for this project**, rather than illustrative placeholders — see Section 8 for the full identifier inventory.
+8. **Every specification in this document and in `DEPLOYMENT_AZURE.md` is grounded in the resource names and Terraform resource names actually used by the reference implementation.** Account-specific identifiers (tenant, subscription, repository and application IDs) appear only as placeholders, so that the documents remain safe to publish and reusable — see Section 8 for the identifier inventory.
 
 ---
 
@@ -38,7 +38,7 @@ This implementation targets Microsoft Azure and is deliberately structured as a 
 %%{init: {"theme":"base","themeVariables":{"fontFamily":"Arial","fontSize":"16px"},"flowchart":{"nodeSpacing":30,"rankSpacing":50,"padding":10}}}%%
 flowchart TB
     subgraph SC["Source Control"]
-        GH["GitHub repository\nnikmar0808/enterprise-integration-azure\ndevelop / uat / main branches"]
+        GH["GitHub repository\nGITHUB_ORG/REPO_NAME\ndevelop / uat / main branches"]
     end
 
     subgraph CI["CI/CD — GitHub Actions (ci.yml)"]
@@ -267,34 +267,30 @@ Infrastructure provisioning proceeds Development first, verified end-to-end, the
 
 ---
 
-## 8. Real Identifier Inventory
+## 8. Identifier Inventory
 
-The values below are the actual identifiers provisioned for this project, given here once as the single point of reference for every other document in this set.
+The table below is the single point of reference for the identifiers used across this document set. Account-specific identifiers are given only as placeholders; the placeholder names match those defined in `DEPLOYMENT_AZURE.md`. Resource names in the third column are example values from the reference deployment, shown for orientation only. Globally-unique names (registry, Key Vault, PostgreSQL server, API Management) are placeholders in `DEPLOYMENT_AZURE.md` and must be chosen per deployment.
 
-| Identifier | Value |
-|---|---|
-| Azure Tenant ID | `0cf62dc3-5a55-48b7-b426-0d69e11b64aa` |
-| Azure Tenant name | `marathestergmail.onmicrosoft.com` |
-| Azure Subscription ID | `39d5c2a5-e03f-48dd-b4cd-955fdcee2cb0` |
-| Azure Subscription name | `Azure_Free_Tier` |
-| Azure region | `centralindia` |
-| GitHub repository | `nikmar0808/enterprise-integration-azure` |
-| GitHub owner name / ID | `nikmar0808` / `217144230` |
-| GitHub repository name / ID | `enterprise-integration-azure` / `1366899366` |
-| HCP Terraform organization | `MyOtg` |
-| HCP Terraform project | `EAI Project Azure` |
-| HCP Terraform workspaces | `eai-dev-azure`, `eai-uat-azure`, `eai-prod-azure`, `eai-shared-azure` |
-| Resource groups | `eai-dev-rg`, `eai-uat-rg`, `eai-prod-rg`, `eai-shared-rg` |
-| VM names | `eai-dev-host`, `eai-uat-host`, `eai-prod-host` |
-| Container Registry | `eaisharedacr` (`eai-shared-rg`) |
-| Key Vault names | `eai-dev-kv-glbunq`, `eai-uat-kv-glbunq`, `eai-prod-kv-glbunq` |
-| PostgreSQL Flexible Server names | `eai-dev-pg-glbunq`, `eai-uat-pg-glbunq`, `eai-prod-pg-glbunq` |
-| API Management names | `eai-dev-apim-glbunq`, `eai-uat-apim-glbunq`, `eai-prod-apim-glbunq` |
-| Bastion host names (superseded — not currently provisioned) | `eai-dev-bastion`, `eai-uat-bastion`, `eai-prod-bastion` |
-| GitHub Actions deployment identity — Development | `gha-deploy-dev-identity`, client ID `4ea4114e-d3f1-4c10-a803-40b33a128b69` |
-| GitHub Actions deployment identity — UAT | `gha-deploy-uat-identity`, client ID `ee3d709e-2cc9-4a3c-b274-cc8f823d964c` |
-| GitHub Actions deployment identity — Production | `gha-deploy-prod-identity`, client ID `ad2adba6-7d1e-4e79-9d6d-4d7300b7581c` |
-| HCP Terraform workload identity | `tfc-run-identity`, client ID `d43edd62-9a9a-4e88-869e-d0a6ef752071` (provisioned for parity; not consumed under Local Execution Mode) |
+| Identifier | Placeholder | Reference-deployment example |
+|---|---|---|
+| Azure Tenant ID | `<AZURE_TENANT_ID>` | not published |
+| Azure Subscription ID | `<AZURE_SUBSCRIPTION_ID>` | not published |
+| Azure Subscription name | — | `Azure_Free_Tier` |
+| Azure region | `<AZURE_LOCATION>` | `centralindia` |
+| GitHub repository | `<GITHUB_ORG>/<REPO_NAME>` | not published |
+| GitHub owner ID / repository ID | `<GITHUB_OWNER_ID>` / `<GITHUB_REPO_ID>` | not published |
+| HCP Terraform organization | `<HCP_TERRAFORM_ORG>` | `MyOtg` |
+| HCP Terraform project | `<HCP_TERRAFORM_PROJECT>` | `EAI Project Azure` |
+| HCP Terraform workspaces | `<HCP_TERRAFORM_WORKSPACE_DEV>`, `_UAT`, `_PROD`, `_SHARED` | `eai-dev-azure`, `eai-uat-azure`, `eai-prod-azure`, `eai-shared-azure` |
+| Resource groups | literal naming convention | `eai-dev-rg`, `eai-uat-rg`, `eai-prod-rg`, `eai-shared-rg` |
+| VM names | literal naming convention | `eai-dev-host`, `eai-uat-host`, `eai-prod-host` |
+| Container Registry | `<AZURE_ACR_NAME>` | `eaisharedacr` (`eai-shared-rg`) |
+| Key Vault names | `<AZURE_KEY_VAULT_NAME_DEV>`, `_UAT`, `_PROD` | `eai-dev-kv-glbunq`, `eai-uat-kv-glbunq`, `eai-prod-kv-glbunq` |
+| PostgreSQL Flexible Server names | `<AZURE_POSTGRES_SERVER_DEV>`, `_UAT`, `_PROD` | `eai-dev-pg-glbunq`, `eai-uat-pg-glbunq`, `eai-prod-pg-glbunq` |
+| API Management names | `<AZURE_APIM_NAME_DEV>`, `_UAT`, `_PROD` | `eai-dev-apim-glbunq`, `eai-uat-apim-glbunq`, `eai-prod-apim-glbunq` |
+| Bastion host names (superseded — not currently provisioned) | — | `eai-dev-bastion`, `eai-uat-bastion`, `eai-prod-bastion` |
+| GitHub Actions deployment identities | client IDs `<AZURE_CLIENT_ID_DEV>`, `_UAT`, `_PROD` (bootstrap outputs `gha_deploy_*_client_id`) | `gha-deploy-dev-identity`, `gha-deploy-uat-identity`, `gha-deploy-prod-identity` |
+| HCP Terraform workload identities | client IDs from bootstrap outputs `tfc_run_dev_client_id`, `tfc_run_uat_client_id`, `tfc_run_prod_client_id` | `tfc-run-identity` (three applications, one per environment workspace; none for the shared workspace; provisioned for parity, not consumed under Local Execution Mode) |
 
 ---
 
@@ -319,7 +315,7 @@ UAT and Production each require only the environment-shaped credential, since th
 | `gha-deploy-dev-identity` | Entra application + service principal | GitHub Actions OIDC | Build, image push, and Development deployment jobs |
 | `gha-deploy-uat-identity` | Entra application + service principal | GitHub Actions OIDC | UAT promotion job (read-only registry access, no push) |
 | `gha-deploy-prod-identity` | Entra application + service principal | GitHub Actions OIDC | Production promotion job (read-only registry access, no push) |
-| `tfc-run-identity` | Entra application + service principal | HCP Terraform OIDC | Provisioned for parity with the AWS-implementation pattern; not the active authentication path, since every workspace runs under Local Execution Mode |
+| `tfc-run-identity` (three applications: dev, UAT, prod) | Entra application + service principal | HCP Terraform OIDC | Provisioned for parity with the AWS-implementation pattern; each application's federated credential is scoped to one environment's workspace, and none exists for the shared workspace. Not the active authentication path, since every workspace runs under Local Execution Mode |
 | Each VM's user-assigned managed identity (`eai-<env>-vm-id`) | Managed identity | Azure IMDS-equivalent, no authentication step | The compute instance exclusively — image pull and its own Key Vault's secrets |
 
 ### A.3 RBAC grants by identity

@@ -28,7 +28,6 @@ resource "azurerm_role_assignment" "gha_uat_kv_secrets_user" {
   principal_id         = data.azuread_service_principal.gha_deploy_uat.object_id
 }
 
-
 # Required by promote-uat's "confirm the image tag exists" step, which
 # calls az acr repository show against the shared registry using
 # gha_deploy_uat's own AAD identity — a data-plane read, not covered by

@@ -8,6 +8,9 @@ terraform {
 
 provider "azuread" {}
 
+# Passing subscription_id and tenant_id explicitly is required for the bootstrap workspace
+# because it does not have a resource group yet, so the provider cannot infer them from a resource group.
+# The other workspaces can omit these values because they have a resource group and the provider can infer them from that.
 provider "azurerm" {
   features {}
   subscription_id = var.azure_subscription_id
@@ -88,13 +91,10 @@ resource "azuread_application_federated_identity_credential" "gha_deploy_prod" {
   subject        = "repo:${var.github_org}@${var.github_owner_id}/${var.repo_name}@${var.github_repo_id}:environment:prod"
 }
 
-# --- HCP Terraform identity ---
-# One identity, wildcarded across all workspaces. This one legitimately
-# stays shared: it authenticates Terraform runs, and workspace-level state
-# isolation (Section 8) — not this trust condition — is what separates one
-# environment's infrastructure from another's. There is no RBAC granted to
-# it at all under Local execution mode (Section 8), so the single-principal
-# concern above does not apply here.
+# --- HCP Terraform identities ---
+# Three separate Entra applications, one per workspace (dev, uat, prod), each
+# trusting only its own workspace. No RBAC is granted to any of them under
+# Local execution mode, because HCP Terraform never itself runs plan or apply.
 
 resource "azuread_application" "tfc_run_dev" {
   display_name = "tfc-run-identity"
@@ -107,7 +107,7 @@ resource "azuread_service_principal" "tfc_run_dev" {
 resource "azuread_application_federated_identity_credential" "tfc_run_dev" {
   application_id = azuread_application.tfc_run_dev.id
   display_name   = "hcp-terraform-workload-identity"
-  description    = "HCP Terraform OIDC — plan/apply runs across all three workspaces"
+  description    = "HCP Terraform OIDC — plan/apply runs for the dev workspace"
   audiences      = ["api://AzureADTokenExchange"]
   issuer         = "https://app.terraform.io"
   subject        = "organization:${var.hcp_terraform_org}:project:*:workspace:${var.hcp_terraform_ws_dev}:run_phase:*"
@@ -124,7 +124,7 @@ resource "azuread_service_principal" "tfc_run_uat" {
 resource "azuread_application_federated_identity_credential" "tfc_run_uat" {
   application_id = azuread_application.tfc_run_uat.id
   display_name   = "hcp-terraform-workload-identity"
-  description    = "HCP Terraform OIDC — plan/apply runs across all three workspaces"
+  description    = "HCP Terraform OIDC — plan/apply runs for the uat workspace"
   audiences      = ["api://AzureADTokenExchange"]
   issuer         = "https://app.terraform.io"
   subject        = "organization:${var.hcp_terraform_org}:project:*:workspace:${var.hcp_terraform_ws_uat}:run_phase:*"
@@ -141,7 +141,7 @@ resource "azuread_service_principal" "tfc_run_prod" {
 resource "azuread_application_federated_identity_credential" "tfc_run_prod" {
   application_id = azuread_application.tfc_run_prod.id
   display_name   = "hcp-terraform-workload-identity"
-  description    = "HCP Terraform OIDC — plan/apply runs across all three workspaces"
+  description    = "HCP Terraform OIDC — plan/apply runs for the prod workspace"
   audiences      = ["api://AzureADTokenExchange"]
   issuer         = "https://app.terraform.io"
   subject        = "organization:${var.hcp_terraform_org}:project:*:workspace:${var.hcp_terraform_ws_prod}:run_phase:*"

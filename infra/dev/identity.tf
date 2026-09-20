@@ -16,10 +16,8 @@ data "azuread_service_principal" "gha_deploy_dev" {
   client_id = var.gha_deploy_client_id
 }
 
-# Only DEV builds and pushes images — matches AWS's gha-deploy-role-dev
-# being the only one of the three roles with ECR push permission. 
-# The GitHub Actions workflow is configured to fail if it tries to push 
-# to ACR from those environments.
+# Only DEV builds and pushes images — the GitHub Actions workflow is configured to fail
+# if it tries to push to ACR from those environments.
 ###########################################################################
 #                                                                         #
 # This resource is not configured for UAT or PROD because                 #

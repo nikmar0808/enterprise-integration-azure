@@ -4,7 +4,7 @@ resource "azurerm_key_vault" "prod" {
   name                       = var.key_vault_name
   location                   = azurerm_resource_group.prod.location
   resource_group_name        = azurerm_resource_group.prod.name
-  tenant_id                  = "0cf62dc3-5a55-48b7-b426-0d69e11b64aa"
+  tenant_id                  = var.azure_tenant_id
   sku_name                   = "standard"
   rbac_authorization_enabled = true
   purge_protection_enabled   = false

@@ -43,7 +43,6 @@ Every command block below uses the placeholders in this table. **Replace all occ
 | `<AZURE_CLIENT_ID_UAT>` | `00000000-0000-0000-0000-000000000000` | Recorded from Phase 1.3's bootstrap apply |
 | `<AZURE_CLIENT_ID_PROD>` | `00000000-0000-0000-0000-000000000000` | Recorded from Phase 1.3's bootstrap apply |
 | `<AZURE_ACR_NAME>` | `my-shared-acr` | A globally-unique Container Registry name — confirm with `az acr check-name --name <AZURE_ACR_NAME>`|
-| `<AZURE_ACR_REGISTRY>` | `<AZURE_ACR_NAME>.azurecr.io` | A globally-unique Container Registry name — confirm with `az acr check-name --name <AZURE_ACR_NAME>` |
 | `<AZURE_KEY_VAULT_NAME_DEV>` | `xxx-dev-kv-suffix` | A globally-unique Key Vault name for DEV; append a short random suffix to avoid collision |
 | `<AZURE_KEY_VAULT_NAME_UAT>` | `xxx-uat-kv-suffix` | A globally-unique Key Vault name for UAT; append a short random suffix to avoid collision |
 | `<AZURE_KEY_VAULT_NAME_PROD>` | `xxx-prod-kv-suffix` | A globally-unique Key Vault name for PROD; append a short random suffix to avoid collision |
@@ -140,6 +139,84 @@ foreach ($ns in $providers) { Write-Output "$ns`: $(az provider show --namespace
 
 A one-time, locally-applied, separate-state Terraform root creates only the Entra applications, service principals, and federated identity credentials described in `ARCHITECTURE_AZURE.md` Appendix A — no application infrastructure. This resolves the same circularity a remote Terraform run would otherwise face: an identity cannot be used to authenticate the very Terraform run that creates it.
 
+**Refer to file:** `infra/bootstrap/terraform.tfvars.sample`
+
+**File to modify:** `infra/bootstrap/variables.tf`.
+
+```hcl
+variable "azure_tenant_id" {
+  type      = string
+  sensitive = true
+}
+
+variable "azure_subscription_id" {
+  type      = string
+  sensitive = true
+}
+
+variable "github_org" {
+  type = string
+}
+
+variable "github_owner_id" {
+  type = string
+}
+
+variable "repo_name" {
+  type = string
+}
+
+variable "github_repo_id" {
+  type = string
+}
+
+variable "hcp_terraform_org" {
+  type = string
+}
+
+variable "hcp_terraform_ws_shared" {
+  type = string
+}
+
+variable "hcp_terraform_ws_dev" {
+  type = string
+}
+
+variable "hcp_terraform_ws_uat" {
+  type = string
+}
+
+variable "hcp_terraform_ws_prod" {
+  type = string
+}
+
+variable "gha_deploy_client_id" {
+  type      = string
+  sensitive = true
+}
+
+variable "acr_name" {
+  type = string
+}
+
+variable "key_vault_name" {
+  type = string
+}
+
+variable "postgres_server_name" {
+  type = string
+}
+
+variable "apim_name" {
+  type = string
+}
+
+variable "operator_ip_cidr" {
+  type        = string
+  description = "Operator's public IP, as a /32 CIDR, permitted to reach the VM's SSH port directly."
+}
+```
+
 **File to modify:** `infra/bootstrap/main.tf`.
 
 ```hcl
@@ -152,19 +229,23 @@ terraform {
 }
 
 provider "azuread" {}
+
 provider "azurerm" {
   features {}
-  subscription_id = "<AZURE_SUBSCRIPTION_ID>"
-  tenant_id       = "<AZURE_TENANT_ID>"
+  subscription_id = var.azure_subscription_id
+  tenant_id       = var.azure_tenant_id
 }
 
 # --- GitHub Actions deployment identities ---
-# Three separate Entra applications — one per environment — not one
+# THREE separate Entra applications — one per environment — not one
 # application with three federated credentials. RBAC in Entra is scoped to
 # the service principal, not to which federated credential authenticated
-# it; a single shared application would mean any RBAC grant made to it is
-# usable regardless of which environment's GitHub context obtained the
-# token, defeating the per-environment isolation this design requires.
+# it; a single shared application would mean any RBAC grant made to it
+# (Section 10) is usable regardless of which environment's GitHub context
+# obtained the token, defeating the per-environment isolation Section 1
+# Rule 4 requires. This matches AWS's three separate IAM roles exactly —
+# separate principal per environment, not separate trust condition on one
+# shared principal.
 
 resource "azuread_application" "gha_deploy_dev" {
   display_name = "gha-deploy-dev-identity"
@@ -178,23 +259,23 @@ resource "azuread_application_federated_identity_credential" "gha_deploy_dev_ref
   description    = "GitHub Actions OIDC — dev build/push jobs (no environment: key, push-triggered on develop)"
   audiences      = ["api://AzureADTokenExchange"]
   issuer         = "https://token.actions.githubusercontent.com"
-  subject        = "repo:<GITHUB_ORG>@<GITHUB_OWNER_ID>/<REPO_NAME>@<GITHUB_REPO_ID>:ref:refs/heads/develop"
+  subject        = "repo:${var.github_org}@${var.github_owner_id}/${var.repo_name}@${var.github_repo_id}:ref:refs/heads/develop"
 }
 
 # A second, separate credential — Entra federated credentials match exactly
-# one subject each. The docker-build-push job (no environment: key)
-# receives a ref:refs/heads/BRANCH-shaped claim and authenticates via the
-# credential above; the deploy-dev job declares environment: dev and
-# receives an environment:NAME-shaped claim instead, regardless of branch —
-# it needs this second credential or it fails OIDC even though the build
-# job works.
+# one subject each (unlike AWS IAM's StringLike, which accepts an array).
+# The docker-build-push jobs (no `environment:` key) receive a
+# ref:refs/heads/BRANCH-shaped claim and authenticate via the credential
+# above; the deploy-dev job declares `environment: dev` and receives an
+# environment:NAME-shaped claim instead, regardless of branch — it needs
+# this second credential or it fails OIDC even though the build jobs work.
 resource "azuread_application_federated_identity_credential" "gha_deploy_dev" {
   application_id = azuread_application.gha_deploy_dev.id
   display_name   = "github-actions-dev-environment"
   description    = "GitHub Actions OIDC — deploy-dev job (declares environment: dev)"
   audiences      = ["api://AzureADTokenExchange"]
   issuer         = "https://token.actions.githubusercontent.com"
-  subject        = "repo:<GITHUB_ORG>@<GITHUB_OWNER_ID>/<REPO_NAME>@<GITHUB_REPO_ID>:environment:dev"
+  subject        = "repo:${var.github_org}@${var.github_owner_id}/${var.repo_name}@${var.github_repo_id}:environment:dev"
 }
 
 resource "azuread_application" "gha_deploy_uat" {
@@ -209,7 +290,9 @@ resource "azuread_application_federated_identity_credential" "gha_deploy_uat" {
   description    = "GitHub Actions OIDC — uat environment deployments"
   audiences      = ["api://AzureADTokenExchange"]
   issuer         = "https://token.actions.githubusercontent.com"
-  subject        = "repo:<GITHUB_ORG>@<GITHUB_OWNER_ID>/<REPO_NAME>@<GITHUB_REPO_ID>:environment:uat"
+  # A workflow_dispatch-triggered job declaring `environment: uat` receives
+  # this claim shape, not a ref:refs/heads/BRANCH shape.
+  subject        = "repo:${var.github_org}@${var.github_owner_id}/${var.repo_name}@${var.github_repo_id}:environment:uat"
 }
 
 resource "azuread_application" "gha_deploy_prod" {
@@ -224,39 +307,75 @@ resource "azuread_application_federated_identity_credential" "gha_deploy_prod" {
   description    = "GitHub Actions OIDC — prod environment deployments"
   audiences      = ["api://AzureADTokenExchange"]
   issuer         = "https://token.actions.githubusercontent.com"
-  subject        = "repo:<GITHUB_ORG>@<GITHUB_OWNER_ID>/<REPO_NAME>@<GITHUB_REPO_ID>:environment:prod"
+  subject        = "repo:${var.github_org}@${var.github_owner_id}/${var.repo_name}@${var.github_repo_id}:environment:prod"
 }
 
-# --- HCP Terraform identity ---
-# One identity, wildcarded across all workspaces — legitimately shared,
-# since workspace-level state isolation (not this trust condition) is what
-# separates one environment's infrastructure from another's. No RBAC is
-# granted to it anywhere in this project (Section 1.4), since every
-# workspace runs under Local Execution Mode.
+# --- HCP Terraform identities ---
+# Three separate Entra applications, one per workspace (dev, uat, prod), each
+# trusting only its own workspace. No RBAC is granted to any of them under
+# Local execution mode, because HCP Terraform never itself runs plan or apply.
 
-resource "azuread_application" "tfc_run" {
+resource "azuread_application" "tfc_run_dev" {
   display_name = "tfc-run-identity"
 }
-resource "azuread_service_principal" "tfc_run" {
-  client_id = azuread_application.tfc_run.client_id
+
+resource "azuread_service_principal" "tfc_run_dev" {
+  client_id = azuread_application.tfc_run_dev.client_id
 }
-resource "azuread_application_federated_identity_credential" "tfc_run" {
-  application_id = azuread_application.tfc_run.id
+
+resource "azuread_application_federated_identity_credential" "tfc_run_dev" {
+  application_id = azuread_application.tfc_run_dev.id
   display_name   = "hcp-terraform-workload-identity"
-  description    = "HCP Terraform OIDC — plan/apply runs across all workspaces"
+  description    = "HCP Terraform OIDC — plan/apply runs across all three workspaces"
   audiences      = ["api://AzureADTokenExchange"]
   issuer         = "https://app.terraform.io"
-  subject        = "organization:<HCP_TERRAFORM_ORG>:project:*:workspace:eai-*-azure:run_phase:*"
+  subject        = "organization:${var.hcp_terraform_org}:project:*:workspace:${var.hcp_terraform_ws_dev}:run_phase:*"
+}
+
+resource "azuread_application" "tfc_run_uat" {
+  display_name = "tfc-run-identity"
+}
+
+resource "azuread_service_principal" "tfc_run_uat" {
+  client_id = azuread_application.tfc_run_uat.client_id
+}
+
+resource "azuread_application_federated_identity_credential" "tfc_run_uat" {
+  application_id = azuread_application.tfc_run_uat.id
+  display_name   = "hcp-terraform-workload-identity"
+  description    = "HCP Terraform OIDC — plan/apply runs across all three workspaces"
+  audiences      = ["api://AzureADTokenExchange"]
+  issuer         = "https://app.terraform.io"
+  subject        = "organization:${var.hcp_terraform_org}:project:*:workspace:${var.hcp_terraform_ws_uat}:run_phase:*"
+}
+
+resource "azuread_application" "tfc_run_prod" {
+  display_name = "tfc-run-identity"
+}
+
+resource "azuread_service_principal" "tfc_run_prod" {
+  client_id = azuread_application.tfc_run_prod.client_id
+}
+
+resource "azuread_application_federated_identity_credential" "tfc_run_prod" {
+  application_id = azuread_application.tfc_run_prod.id
+  display_name   = "hcp-terraform-workload-identity"
+  description    = "HCP Terraform OIDC — plan/apply runs across all three workspaces"
+  audiences      = ["api://AzureADTokenExchange"]
+  issuer         = "https://app.terraform.io"
+  subject        = "organization:${var.hcp_terraform_org}:project:*:workspace:${var.hcp_terraform_ws_prod}:run_phase:*"
 }
 
 # No RBAC role assignments are created here — that happens once each
-# environment's resource group exists (Phase 2), which is exactly the
+# environment's resource group exists (Section 10), which is exactly the
 # circularity this bootstrap step exists to break.
 
 output "gha_deploy_dev_client_id"  { value = azuread_application.gha_deploy_dev.client_id }
 output "gha_deploy_uat_client_id"  { value = azuread_application.gha_deploy_uat.client_id }
 output "gha_deploy_prod_client_id" { value = azuread_application.gha_deploy_prod.client_id }
-output "tfc_run_client_id"         { value = azuread_application.tfc_run.client_id }
+output "tfc_run_dev_client_id"         { value = azuread_application.tfc_run_dev.client_id }
+output "tfc_run_uat_client_id"         { value = azuread_application.tfc_run_uat.client_id }
+output "tfc_run_prod_client_id"         { value = azuread_application.tfc_run_prod.client_id }
 ```
 
 **Apply:**
@@ -288,9 +407,9 @@ What actually authenticates a local `terraform apply` is the `az login` session 
 
 `tfc-run-identity` (Section 1.3) is retained for parity with the GitHub Actions identity model and is not actively used under Local Execution Mode; it becomes relevant only if a workspace is later switched to Remote or Agent execution mode — the standard-quota, steady-state alternative to the fully-local pattern used throughout this document.
 
-## Phase 2 — Shared Container Registry and Development Infrastructure
+## 1.5 Shared Container Registry
 
-### 2.1 Rationale for this phase's ordering
+### 1.5.1 Rationale for this phase's ordering
 
 The shared Container Registry (`ARCHITECTURE_AZURE.md`, Section 5) is provisioned first, once, outside any environment's own workspace, since every environment's `identity.tf` references it by data-source lookup. Development is provisioned next and verified end-to-end before UAT or Production infrastructure is touched — a first-attempt `terraform apply` against a new subscription is the most likely place to hit an unanticipated issue (a free-tier quota limit, a region capacity restriction, a resource-name collision), and finding that out once against Development alone is cheaper than discovering it three times, or discovering it in Production.
 
@@ -313,48 +432,21 @@ Resolve-DnsName <AZURE_APIM_NAME_DEV>.azure-api.net -ErrorAction SilentlyContinu
 
 A DNS resolution failure (`NXDOMAIN` / no output) for the PostgreSQL and API Management hostname checks is the expected, good result — confirming nothing else is already using those globally-unique hostnames. The same checks apply, with the corresponding names, before UAT and Production provisioning (Phase 3).
 
-### 2.2 Shared Container Registry
+### 1.5.2 Shared Container Registry
+Applied against workspace `<HCP_TERRAFORM_WORKSPACE_SHARED>`.
+**File to modify:** `infra/shared/terraform.tfvars.sample` - rename by removing ".sample" from name
 
-**File to modify:** `infra/shared/main.tf`, applied against workspace `<HCP_TERRAFORM_WORKSPACE_SHARED>`.
+**Referred file:** `infra/shared/variables.tf`
 
-```hcl
-terraform {
-  cloud {
-    organization = "<HCP_TERRAFORM_ORG>"
-    workspaces {
-      name = "<HCP_TERRAFORM_WORKSPACE_SHARED>"
-    }
-  }
-  required_providers {
-    azurerm = { source = "hashicorp/azurerm", version = "~> 4.0" }
-  }
-  required_version = ">= 1.5.0"
-}
+**Referring files:**
 
-provider "azurerm" {
-  features {}
-}
-```
-**File to modify:** `infra/shared/acr.tf`, applied against workspace `<HCP_TERRAFORM_WORKSPACE_SHARED>`.
+**With no modifications:**
+`infra/shared/main.tf` 
+`infra/shared/acr.tf`
+`infra/shared/resource-group.tf`
 
-resource "azurerm_container_registry" "eai_acr" {
-  name                = "<AZURE_ACR_NAME>"
-  resource_group_name = azurerm_resource_group.shared.name
-  location            = azurerm_resource_group.shared.location
-  sku                 = "Basic"
-  admin_enabled       = false
-}
-
-output "acr_id"           { value = azurerm_container_registry.eai_acr.id }
-output "acr_login_server" { value = azurerm_container_registry.eai_acr.login_server }
-
-resource "azurerm_resource_group" "shared" {
-  name     = "eai-shared-rg"
-  location = "centralindia"
-  tags     = { Project = "enterprise-integration", ManagedBy = "terraform", Scope = "shared" }
-}
-
-```
+**With modifications:**
+None
 
 ```bash
 # bash — run from: <repo-root>/infra/shared
@@ -373,194 +465,30 @@ terraform apply
 
 **Record `acr_login_server`** — resolves to `<AZURE_ACR_NAME>.azurecr.io`, the `ACR_REGISTRY` value consumed by the CI workflow (Phase 4). This resource group and registry are never destroyed as part of any environment's provisioning or teardown lifecycle — there is no environment-cycling equivalent for this workspace.
 
-### 2.3 Development networking
+## Phase 2 — Development Infrastructure
 
-**File to modify:** `infra/dev/main.tf` — backend, provider, and the operator-IP variable consumed by the SSH-access NSG rule below.
+Applied against workspace `<HCP_TERRAFORM_WORKSPACE_DEV>`
 
+**File to modify:** `infra/dev/terraform.tfvars.sample` - rename by removing ".sample" from name
+
+**Referred file:** `infra/dev/variables.tf` - operator-IP variable consumed by the SSH-access NSG rule also here
+
+**Referring files:**
+
+**With no modifications:**
+
+### 2.1 Backend and provider
+`infra/dev/main.tf`
+
+### 2.2 Networking
+`infra/dev/networking.tf`
+
+### 2.3 Managed Identity
+`infra/dev/identity.tf`.
+Note:
 ```hcl
-terraform {
-  cloud {
-    organization = "<HCP_TERRAFORM_ORG>"
-    workspaces {
-      name = "<HCP_TERRAFORM_WORKSPACE_DEV>"
-    }
-  }
-  required_providers {
-    azurerm = { source = "hashicorp/azurerm", version = "~> 4.0" }
-    random  = { source = "hashicorp/random", version = "~> 3.6" }
-  }
-  required_version = ">= 1.5.0"
-}
-
-provider "azurerm" {
-  features {}
-}
-
-# Consumed by networking.tf's AllowOperatorSSH rule — the Bastion
-# substitute described in ARCHITECTURE_AZURE.md Section 6. Must be a
-# narrow CIDR (a /32), never 0.0.0.0/0. Supplied only at `terraform apply`
-# time via -var; never committed to a .tfvars file.
-variable "operator_ip_cidr" {
-  description = "Operator's public IP, as a /32 CIDR, permitted to reach the VM's SSH port directly."
-  type        = string
-}
-
-resource "azurerm_resource_group" "dev" {
-  name     = "eai-dev-rg"
-  location = "centralindia"
-  tags     = { Project = "enterprise-integration", Environment = "dev", ManagedBy = "terraform" }
-}
-
-# The shared ACR (Section 2.2) lives in a different HCP Terraform workspace
-# and therefore a different state file — referenced here by data source,
-# not a resource.
-data "azurerm_container_registry" "shared" {
-  name                = "<AZURE_ACR_NAME>"
-  resource_group_name = "eai-shared-rg"
-}
-```
-
-**File to modify:** `infra/dev/networking.tf`.
-
-```hcl
-resource "azurerm_virtual_network" "dev" {
-  name                = "eai-dev-vnet"
-  address_space       = ["10.10.0.0/16"]
-  location            = azurerm_resource_group.dev.location
-  resource_group_name = azurerm_resource_group.dev.name
-}
-
-resource "azurerm_subnet" "app" {
-  name                 = "app-subnet"
-  resource_group_name  = azurerm_resource_group.dev.name
-  virtual_network_name = azurerm_virtual_network.dev.name
-  address_prefixes     = ["10.10.1.0/24"]
-}
-
-resource "azurerm_subnet" "db" {
-  name                 = "db-subnet"
-  resource_group_name  = azurerm_resource_group.dev.name
-  virtual_network_name = azurerm_virtual_network.dev.name
-  address_prefixes     = ["10.10.2.0/24"]
-
-  delegation {
-    name = "postgres-delegation"
-    service_delegation {
-      name    = "Microsoft.DBforPostgreSQL/flexibleServers"
-      actions = ["Microsoft.Network/virtualNetworks/subnets/join/action"]
-    }
-  }
-}
-
-# --- Azure Bastion subnet — not provisioned, retained commented out ---
-# This is the network prerequisite for the recommended, standard-quota
-# access pattern documented in ARCHITECTURE_AZURE.md Section 6.1. Azure
-# Bastion requires a subnet with exactly this name — a hard platform
-# requirement, not a naming convention. Not applied on this subscription
-# because a dedicated Bastion host per environment requires one additional
-# Standard public IP per environment (three total across Development, UAT,
-# Production), which together with the three VM public IPs already
-# required as API Management's backend target exceeds this subscription's
-# three-Standard-public-IP free-tier quota. A standard-quota subscription
-# should uncomment this subnet and the corresponding bastion.tf resources
-# (Section 2.6), and remove the AllowOperatorSSH rule below in favor of it.
-#
-# resource "azurerm_subnet" "bastion" {
-#   name                 = "AzureBastionSubnet"
-#   resource_group_name  = azurerm_resource_group.dev.name
-#   virtual_network_name = azurerm_virtual_network.dev.name
-#   address_prefixes     = ["10.10.3.0/26"]
-# }
-
-resource "azurerm_network_security_group" "app" {
-  name                = "eai-dev-app-nsg"
-  location            = azurerm_resource_group.dev.location
-  resource_group_name = azurerm_resource_group.dev.name
-
-  security_rule {
-    name                       = "AllowJavaGateway"
-    priority                   = 100
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    source_port_range          = "*"
-    destination_port_range     = "8081"
-    source_address_prefix      = "*"
-    destination_address_prefix = "*"
-  }
-
-  # Substitutes for Azure Bastion's network path — see the commented-out
-  # subnet block above and ARCHITECTURE_AZURE.md Section 6 for the full
-  # rationale. var.operator_ip_cidr must be a narrow range (a /32) — never
-  # 0.0.0.0/0, since unlike Bastion's platform-managed tunnel this port is
-  # genuinely internet-facing.
-  security_rule {
-    name                       = "AllowOperatorSSH"
-    priority                   = 110
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    source_port_range          = "*"
-    destination_port_range     = "22"
-    source_address_prefix      = var.operator_ip_cidr
-    destination_address_prefix = "*"
-  }
-}
-
-resource "azurerm_subnet_network_security_group_association" "app" {
-  subnet_id                 = azurerm_subnet.app.id
-  network_security_group_id = azurerm_network_security_group.app.id
-}
-
-resource "azurerm_public_ip" "vm" {
-  name                = "eai-dev-host-pip"
-  location            = azurerm_resource_group.dev.location
-  resource_group_name = azurerm_resource_group.dev.name
-  allocation_method   = "Static"
-  sku                 = "Standard"
-}
-
-resource "azurerm_network_interface" "vm" {
-  name                = "eai-dev-host-nic"
-  location            = azurerm_resource_group.dev.location
-  resource_group_name = azurerm_resource_group.dev.name
-
-  ip_configuration {
-    name                          = "internal"
-    subnet_id                     = azurerm_subnet.app.id
-    private_ip_address_allocation = "Dynamic"
-    public_ip_address_id          = azurerm_public_ip.vm.id
-  }
-}
-```
-
-### 2.4 Development managed identity
-
-**File to modify:** `infra/dev/identity.tf`.
-
-```hcl
-resource "azurerm_user_assigned_identity" "vm" {
-  name                = "eai-dev-vm-id"
-  location            = azurerm_resource_group.dev.location
-  resource_group_name = azurerm_resource_group.dev.name
-}
-
-# Pull-only access to the shared registry — the VM never needs push
-# permission, matching the AWS EC2 instance role's pull-only ECR scope.
-resource "azurerm_role_assignment" "vm_acr_pull" {
-  scope                = data.azurerm_container_registry.shared.id
-  role_definition_name = "AcrPull"
-  principal_id         = azurerm_user_assigned_identity.vm.principal_id
-}
-
-data "azuread_service_principal" "gha_deploy_dev" {
-  client_id = var.gha_deploy_client_id
-}
-
-# Only DEV builds and pushes images — matches AWS's gha-deploy-role-dev
-# being the only one of the three roles with ECR push permission. 
-# The GitHub Actions workflow is configured to fail if it tries to push 
-# to ACR from those environments.
+# Only DEV builds and pushes images — the GitHub Actions workflow is configured to fail
+# if it tries to push to ACR from those environments.
 ###########################################################################
 #                                                                         #
 # This resource is not configured for UAT or PROD because                 #
@@ -572,115 +500,21 @@ resource "azurerm_role_assignment" "gha_dev_acr_push" {
   role_definition_name = "AcrPush"
   principal_id         = data.azuread_service_principal.gha_deploy_dev.object_id
 }
-
-# Grants only the ability to invoke Run Command against this one VM — not
-# Contributor on the resource group, not access to any other environment's
-# VM. This is the Azure equivalent of AWS's ssm:SendCommand statement
-# scoped by ssm:resourceTag/Name to one tagged instance.
-resource "azurerm_role_assignment" "gha_dev_vm_runcommand" {
-  scope                = azurerm_linux_virtual_machine.dev.id
-  role_definition_name = "Virtual Machine Contributor"
-  principal_id         = data.azuread_service_principal.gha_deploy_dev.object_id
-}
-
-# Required by the deploy-dev job (Section 11.2), which reads the two Key
-# Vault secrets from within the GitHub Actions runner rather than on the VM.
-resource "azurerm_role_assignment" "gha_dev_kv_secrets_user" {
-  scope                = azurerm_key_vault.dev.id
-  role_definition_name = "Key Vault Secrets User"
-  principal_id         = data.azuread_service_principal.gha_deploy_dev.object_id
-}
-
-output "vm_identity_client_id" { value = azurerm_user_assigned_identity.vm.client_id }
-
 ```
 
-### 2.5 Development Key Vault
+### 2.4 Development Key Vault
+`infra/dev/key-vault.tf`.
 
-**File to modify:** `infra/dev/key-vault.tf`.
+### 2.5 Azure Bastion — not provisioned
+`infra/dev/bastion.tf`**
+Note: This is the recommended pattern for a subscription with standard public-IP quota, and the direct successor once this subscription's constraint (`ARCHITECTURE_AZURE.md`, Section 6) is no longer binding
+**Check Note on `az ssh vm` provisioning in Section 2.9.**
 
-```hcl
-data "azurerm_client_config" "current" {}
+### 2.6 API Management
+`infra/dev/api-management.tf`.
+Note: Operations are declared per-route explicitly rather than through a wildcard template — API Management's template language does not accept `/*` as a catch-all; the correct wildcard syntax is `/{*path}` with an accompanying `template_parameter` block, and this project's confirmed-working configuration uses explicit routes instead.
 
-resource "azurerm_key_vault" "dev" {
-  name                       = "<AZURE_KEY_VAULT_NAME_DEV>"
-  location                   = azurerm_resource_group.dev.location
-  resource_group_name        = azurerm_resource_group.dev.name
-  tenant_id                  = "<AZURE_TENANT_ID>"
-  sku_name                   = "standard"
-  rbac_authorization_enabled = true
-  purge_protection_enabled   = false
-  soft_delete_retention_days = 7
-}
-
-resource "azurerm_role_assignment" "vm_kv_secrets_user" {
-  scope                = azurerm_key_vault.dev.id
-  role_definition_name = "Key Vault Secrets User"
-  principal_id         = azurerm_user_assigned_identity.vm.principal_id
-}
-
-resource "azurerm_role_assignment" "terraform_kv_secrets_officer" {
-  scope                = azurerm_key_vault.dev.id
-  role_definition_name = "Key Vault Secrets Officer"
-  principal_id         = data.azurerm_client_config.current.object_id
-}
-
-resource "random_password" "postgres_admin" {
-  length  = 24
-  special = false
-}
-
-resource "random_password" "api_security_token" {
-  length  = 32
-  special = false
-}
-
-resource "azurerm_key_vault_secret" "database_password" {
-  name         = "database-password"
-  value        = random_password.postgres_admin.result
-  key_vault_id = azurerm_key_vault.dev.id
-  depends_on   = [azurerm_role_assignment.terraform_kv_secrets_officer]
-}
-
-resource "azurerm_key_vault_secret" "api_security_token" {
-  name         = "api-security-token"
-  value        = random_password.api_security_token.result
-  key_vault_id = azurerm_key_vault.dev.id
-  depends_on   = [azurerm_role_assignment.terraform_kv_secrets_officer]
-}
-```
-
-Key Vault data-plane access uses Azure RBAC (`rbac_authorization_enabled = true`), Microsoft's current recommended authorization model for the Key Vault data plane, rather than the legacy access-policy model.
-
-### 2.6 Azure Bastion — not provisioned
-
-**Check Note on `az ssh vm` provisioning in Section 2.10.**
-
-**`infra/dev/bastion.tf` — retained commented out.** This is the recommended pattern for a subscription with standard public-IP quota, and the direct successor once this subscription's constraint (`ARCHITECTURE_AZURE.md`, Section 6) is no longer binding:
-
-```hcl
-# resource "azurerm_public_ip" "bastion" {
-#   name                = "eai-dev-bastion-pip"
-#   location            = azurerm_resource_group.dev.location
-#   resource_group_name = azurerm_resource_group.dev.name
-#   allocation_method   = "Static"
-#   sku                 = "Standard"
-# }
-#
-# resource "azurerm_bastion_host" "dev" {
-#   name                = "eai-dev-bastion"
-#   location            = azurerm_resource_group.dev.location
-#   resource_group_name = azurerm_resource_group.dev.name
-#   sku                 = "Standard"  # required for native-client / Azure AD login support
-#   tunneling_enabled   = true        # required for `az network bastion ssh` (native client)
-#
-#   ip_configuration {
-#     name                 = "configuration"
-#     subnet_id            = azurerm_subnet.bastion.id
-#     public_ip_address_id = azurerm_public_ip.bastion.id
-#   }
-# }
-```
+**Files that may need modifications:**
 
 ### 2.7 Development PostgreSQL Flexible Server
 
@@ -753,19 +587,10 @@ az vm list-skus --location centralindia --size Standard_B --all --query "[].{Nam
 
 Every classic (v1) B-series size shows `RestrictionType: Location` for this subscription in this region — genuinely blocked region-wide, not a transient shortage. The v2 generation shows `RestrictionType: Zone` only, which does not affect this deployment since no `zone` is pinned on the VM resource; `Standard_B2s_v2` is the smallest v2 size available.
 
-**File to modify:** `infra/dev/compute.tf`.
+**File to modify:** `infra/dev/compute.tf`
 
+May have to modify `size = "Standard_B2s_v2"` to someother available capacity.
 ```hcl
-# Required by azurerm_linux_virtual_machine's mandatory auth block — this
-# key is never distributed or used for actual login. Real interactive
-# access is via the AADSSHLoginForLinux extension below (ARCHITECTURE_AZURE.md
-# Section 6), which requires either a password or an SSH key to satisfy the
-# resource schema at creation time without anyone needing to hold or use it.
-resource "tls_private_key" "vm_unused" {
-  algorithm = "RSA"
-  rsa_bits  = 4096
-}
-
 resource "azurerm_linux_virtual_machine" "dev" {
   name                            = "eai-dev-host"
   resource_group_name             = azurerm_resource_group.dev.name
@@ -779,24 +604,10 @@ resource "azurerm_linux_virtual_machine" "dev" {
     username   = "azureuser"
     public_key = tls_private_key.vm_unused.public_key_openssh
   }
+```
 
-  identity {
-    type         = "UserAssigned"
-    identity_ids = [azurerm_user_assigned_identity.vm.id]
-  }
-
-  os_disk {
-    caching              = "ReadWrite"
-    storage_account_type = "Standard_LRS"
-  }
-
-  source_image_reference {
-    publisher = "Canonical"
-    offer     = "ubuntu-24_04-lts"
-    sku       = "server"
-    version   = "latest"
-  }
-
+The `custom_data` script disables Ubuntu's unattended-upgrade timers before any `apt-get` call, installs Docker CE from Docker's own repository rather than the `docker.io` package, and installs the Azure CLI — all three fixes were required for the bootstrap script to complete reliably on Ubuntu 24.04 LTS.
+```hcl
   custom_data = base64encode(<<-EOF
     #!/bin/bash
     set -e
@@ -837,88 +648,9 @@ resource "azurerm_linux_virtual_machine" "dev" {
   EOF
   )
 }
-
-# Grants the AAD login extension's actual authorization — without this, the
-# extension is installed but no one can use it to sign in.
-resource "azurerm_role_assignment" "vm_admin_login" {
-  scope                = azurerm_linux_virtual_machine.dev.id
-  role_definition_name = "Virtual Machine Administrator Login"
-  principal_id         = data.azurerm_client_config.current.object_id
-}
-
-# Installs Azure AD authentication on the VM itself — the mechanism behind
-# both the Bastion "Connect with Azure AD" option and the az ssh vm
-# substitute actually used on this subscription.
-# Used in Section 2.10
-resource "azurerm_virtual_machine_extension" "aad_login" {
-  name                       = "AADSSHLoginForLinux"
-  virtual_machine_id         = azurerm_linux_virtual_machine.dev.id
-  publisher                  = "Microsoft.Azure.ActiveDirectory"
-  type                       = "AADSSHLoginForLinux"
-  type_handler_version       = "1.0"
-  auto_upgrade_minor_version = true
-}
-
-output "vm_id"        { value = azurerm_linux_virtual_machine.dev.id }
-output "vm_public_ip" { value = azurerm_public_ip.vm.ip_address }
 ```
 
-The `custom_data` script disables Ubuntu's unattended-upgrade timers before any `apt-get` call, installs Docker CE from Docker's own repository rather than the `docker.io` package, and installs the Azure CLI — all three fixes were required for the bootstrap script to complete reliably on Ubuntu 24.04 LTS.
-
-### 2.9 API Management
-
-**File to modify:** `infra/dev/api-management.tf`.
-
-```hcl
-resource "azurerm_api_management" "dev" {
-  name                = "<AZURE_APIM_NAME_DEV>"
-  location            = azurerm_resource_group.dev.location
-  resource_group_name = azurerm_resource_group.dev.name
-  publisher_name      = "Enterprise Integration Project"
-  publisher_email     = "nikmar0808@users.noreply.github.com"
-  sku_name            = "Consumption_0"
-}
-
-resource "azurerm_api_management_api" "dev" {
-  name                   = "enterprise-integration"
-  resource_group_name    = azurerm_resource_group.dev.name
-  api_management_name    = azurerm_api_management.dev.name
-  revision               = "1"
-  display_name           = "Enterprise Integration API"
-  path                   = ""
-  protocols              = ["https"]
-  subscription_required  = false
-  service_url            = "http://${azurerm_public_ip.vm.ip_address}:8081"
-}
-
-resource "azurerm_api_management_api_operation" "dev_health" {
-  operation_id         = "health"
-  api_name             = azurerm_api_management_api.dev.name
-  api_management_name  = azurerm_api_management.dev.name
-  resource_group_name  = azurerm_resource_group.dev.name
-  display_name         = "Health"
-  method                = "GET"
-  url_template          = "/health"
-  response { status_code = 200 }
-}
-
-resource "azurerm_api_management_api_operation" "dev_bulk" {
-  operation_id         = "bulk"
-  api_name             = azurerm_api_management_api.dev.name
-  api_management_name  = azurerm_api_management.dev.name
-  resource_group_name  = azurerm_resource_group.dev.name
-  display_name         = "Bulk Ingest"
-  method                = "POST"
-  url_template          = "/api/v1/ingest/bulk"
-  response { status_code = 200 }
-}
-
-output "apim_gateway_url" { value = azurerm_api_management.dev.gateway_url }
-```
-
-Operations are declared per-route explicitly rather than through a wildcard template — API Management's template language does not accept `/*` as a catch-all; the correct wildcard syntax is `/{*path}` with an accompanying `template_parameter` block, and this project's confirmed-working configuration uses explicit routes instead.
-
-### 2.10 Apply and Verify Development infrastructure
+### 2.9 Apply and Verify Development infrastructure
 
 ```bash
 # bash — run from: <repo-root>/infra/dev
@@ -973,6 +705,9 @@ az ssh vm --resource-group eai-dev-rg --name eai-dev-host
 
 UAT's infrastructure (`infra/uat/`) is structurally identical to Development's (Phase 2.3–2.9), differing only in identifiers. It is not reproduced in full here; only the differences and the apply sequence are given.
 
+**Refer to file:** `infra/uat/terraform.tfvars.sample`
+**File to modify:** `infra/uat/variables.tf`.
+
 **Substitutions relative to `infra/dev/`:**
 
 | Development value | UAT value |
@@ -988,34 +723,6 @@ UAT's infrastructure (`infra/uat/`) is structurally identical to Development's (
 | GitHub Actions identity client ID | `<AZURE_CLIENT_ID_DEV>` → `<AZURE_CLIENT_ID_UAT>` |
 
 **One structural difference, not merely a naming one:** UAT's GitHub Actions RBAC (the UAT equivalent of Phase 2.9) grants `AcrPull` only — never `AcrPush`. UAT never builds an image; its promotion workflow only confirms an already-built image's tag exists in the shared registry before deploying it.
-
-```hcl
-# infra/uat/identity.tf — GitHub Actions RBAC block (append after the
-# vm_acr_pull block equivalent to Section 2.4)
-data "azuread_service_principal" "gha_deploy_uat" {
-  client_id = "<AZURE_CLIENT_ID_UAT>"
-}
-
-resource "azurerm_role_assignment" "gha_uat_acr_pull" {
-  scope                = data.azurerm_container_registry.shared.id
-  role_definition_name = "AcrPull"
-  principal_id         = data.azuread_service_principal.gha_deploy_uat.object_id
-}
-
-resource "azurerm_role_assignment" "gha_uat_vm_runcommand" {
-  scope                = azurerm_linux_virtual_machine.uat.id
-  role_definition_name = "Virtual Machine Contributor"
-  principal_id         = data.azuread_service_principal.gha_deploy_uat.object_id
-}
-
-resource "azurerm_role_assignment" "gha_uat_kv_secrets_user" {
-  scope                = azurerm_key_vault.uat.id
-  role_definition_name = "Key Vault Secrets User"
-  principal_id         = data.azuread_service_principal.gha_deploy_uat.object_id
-}
-
-output "vm_identity_client_id" { value = azurerm_user_assigned_identity.vm.client_id }
-```
 
 **Apply:**
 
@@ -1083,7 +790,6 @@ Production's non-compute resources are applied now regardless, using the same su
 | `AZURE_CLIENT_ID_UAT` | Repository | `<AZURE_CLIENT_ID_UAT>` |
 | `AZURE_CLIENT_ID_PROD` | Repository | `<AZURE_CLIENT_ID_PROD>` |
 | `ACR_NAME` | Repository | Value must be `<AZURE_ACR_NAME>` - The Container Registry's short name (e.g. `eaisharedacr`) — used wherever the CLI needs the name alone, not the full login server |
-| `ACR_REGISTRY` | Repository | Value must be `<ACR_NAME>.azurecr.io` or `<AZURE_ACR_REGISTRY>` - The Container Registry's login server |
 | `DEV_KEY_VAULT_NAME` | Environment `dev` | `<AZURE_KEY_VAULT_NAME_DEV>` |
 | `UAT_KEY_VAULT_NAME` | Environment `uat` | `<AZURE_KEY_VAULT_NAME_UAT>` |
 | `PROD_KEY_VAULT_NAME` | Environment `prod` | `<AZURE_KEY_VAULT_NAME_PROD>` |
@@ -1155,7 +861,7 @@ permissions:
 
 env:
   ACR_NAME: ${{ vars.ACR_NAME }}
-  ACR_REGISTRY: ${{ vars.ACR_REGISTRY }}
+  ACR_REGISTRY: ${{ vars.ACR_NAME }}.azurecr.io
   AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
   AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
@@ -1263,8 +969,8 @@ jobs:
           fi
       - if: steps.check-image.outputs.skip == 'false'
         run: |
-          docker build -t $ACR_REGISTRY/eai-java-gateway:${{ github.sha }} ./01-java-ingestion-service
-          docker build -t $ACR_REGISTRY/eai-python-validator:${{ github.sha }} ./02-python-transformation-api
+          docker build -t ${ACR_REGISTRY}/eai-java-gateway:${{ github.sha }} ./01-java-ingestion-service
+          docker build -t ${ACR_REGISTRY}/eai-python-validator:${{ github.sha }} ./02-python-transformation-api
       - if: steps.check-image.outputs.skip == 'false'
         uses: aquasecurity/trivy-action@0.35.0
         # bypassing this temporarily by setting exit-code = 0
@@ -1277,8 +983,8 @@ jobs:
         with: { image-ref: "${{ env.ACR_REGISTRY }}/eai-python-validator:${{ github.sha }}", severity: "CRITICAL,HIGH", exit-code: 0 }
       - if: steps.check-image.outputs.skip == 'false'
         run: |
-          docker push $ACR_REGISTRY/eai-java-gateway:${{ github.sha }}
-          docker push $ACR_REGISTRY/eai-python-validator:${{ github.sha }}
+          docker push ${ACR_REGISTRY}/eai-java-gateway:${{ github.sha }}
+          docker push ${ACR_REGISTRY}/eai-python-validator:${{ github.sha }}
 
   deploy-dev:
     needs: docker-build-push
@@ -1314,11 +1020,11 @@ jobs:
               "echo DATABASE_URL=postgresql+psycopg://smart_meter_admin:${DB_PASS}@${{ vars.DEV_POSTGRES_FQDN }}:5432/smart_meter_warehouse > /opt/eai/.env" \
               "echo API_SECURITY_TOKEN=${API_TOKEN} >> /opt/eai/.env" \
               "echo ACR_REGISTRY=${ACR_REGISTRY} >> /opt/eai/.env" \
-              "echo IMAGE_TAG=${{ inputs.image_tag }} >> /opt/eai/.env" \
+              "echo IMAGE_TAG=${{ github.sha }} >> /opt/eai/.env" \
               "az login --identity --client-id ${{ vars.DEV_VM_IDENTITY_CLIENT_ID }}" \
               "az acr login --name ${{ vars.ACR_NAME }}" \
-              "cd /opt/eai && ACR_REGISTRY=$ACR_REGISTRY IMAGE_TAG=${{ github.sha }} docker compose -f docker-compose.prod.yml --env-file .env pull" \
-              "cd /opt/eai && ACR_REGISTRY=$ACR_REGISTRY IMAGE_TAG=${{ github.sha }} docker compose -f docker-compose.prod.yml --env-file .env up -d"
+              "cd /opt/eai && ACR_REGISTRY=${ACR_REGISTRY} IMAGE_TAG=${{ github.sha }} docker compose -f docker-compose.prod.yml --env-file .env pull" \
+              "cd /opt/eai && ACR_REGISTRY=${ACR_REGISTRY} IMAGE_TAG=${{ github.sha }} docker compose -f docker-compose.prod.yml --env-file .env up -d"
 
   promote-uat:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/uat'
@@ -1339,7 +1045,7 @@ jobs:
           COMPOSE_B64=$(base64 -w0 infra/docker-compose.prod.yml)
           DB_PASS=$(az keyvault secret show --vault-name ${{ vars.UAT_KEY_VAULT_NAME }} --name database-password --query value -o tsv)
           API_TOKEN=$(az keyvault secret show --vault-name ${{ vars.UAT_KEY_VAULT_NAME }} --name api-security-token --query value -o tsv)
-          ACR_REGISTRY=eaisharedacr.azurecr.io
+          ACR_REGISTRY=${ACR_REGISTRY}
           az vm run-command invoke \
             --resource-group eai-uat-rg \
             --name eai-uat-host \
@@ -1359,8 +1065,8 @@ jobs:
               "echo IMAGE_TAG=${{ inputs.image_tag }} >> /opt/eai/.env" \
               "az login --identity --client-id ${{ vars.UAT_VM_IDENTITY_CLIENT_ID }}" \
               "az acr login --name ${{ vars.ACR_NAME }}" \
-              "cd /opt/eai && ACR_REGISTRY=$ACR_REGISTRY IMAGE_TAG=${{ inputs.image_tag }} docker compose -f docker-compose.prod.yml --env-file .env pull" \
-              "cd /opt/eai && ACR_REGISTRY=$ACR_REGISTRY IMAGE_TAG=${{ inputs.image_tag }} docker compose -f docker-compose.prod.yml --env-file .env up -d"
+              "cd /opt/eai && ACR_REGISTRY=${ACR_REGISTRY} IMAGE_TAG=${{ inputs.image_tag }} docker compose -f docker-compose.prod.yml --env-file .env pull" \
+              "cd /opt/eai && ACR_REGISTRY=${ACR_REGISTRY} IMAGE_TAG=${{ inputs.image_tag }} docker compose -f docker-compose.prod.yml --env-file .env up -d"
 
   promote-prod:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
@@ -1381,7 +1087,7 @@ jobs:
           COMPOSE_B64=$(base64 -w0 infra/docker-compose.prod.yml)
           DB_PASS=$(az keyvault secret show --vault-name ${{ vars.PROD_KEY_VAULT_NAME }} --name database-password --query value -o tsv)
           API_TOKEN=$(az keyvault secret show --vault-name ${{ vars.PROD_KEY_VAULT_NAME }} --name api-security-token --query value -o tsv)
-          ACR_REGISTRY=eaisharedacr.azurecr.io
+          ACR_REGISTRY=${ACR_REGISTRY}
           az vm run-command invoke \
             --resource-group eai-prod-rg \
             --name eai-prod-host \
@@ -1401,8 +1107,8 @@ jobs:
               "echo IMAGE_TAG=${{ inputs.image_tag }} >> /opt/eai/.env" \
               "az login --identity --client-id ${{ vars.PROD_VM_IDENTITY_CLIENT_ID }}" \
               "az acr login --name ${{ vars.ACR_NAME }}" \
-              "cd /opt/eai && ACR_REGISTRY=$ACR_REGISTRY IMAGE_TAG=${{ inputs.image_tag }} docker compose -f docker-compose.prod.yml --env-file .env pull" \
-              "cd /opt/eai && ACR_REGISTRY=$ACR_REGISTRY IMAGE_TAG=${{ inputs.image_tag }} docker compose -f docker-compose.prod.yml --env-file .env up -d"
+              "cd /opt/eai && ACR_REGISTRY=${ACR_REGISTRY} IMAGE_TAG=${{ inputs.image_tag }} docker compose -f docker-compose.prod.yml --env-file .env pull" \
+              "cd /opt/eai && ACR_REGISTRY=${ACR_REGISTRY} IMAGE_TAG=${{ inputs.image_tag }} docker compose -f docker-compose.prod.yml --env-file .env up -d"
 ```
 
 **Known gap, revisit before this pipeline is considered finished:** both image-scan steps in `docker-build-push` run with `exit-code: 0` — CRITICAL/HIGH findings are logged but do not fail the build. This is a temporary state adopted to unblock initial pipeline setup, not a completed production security gate; revert to `exit-code: 1` and triage findings once the rest of the pipeline is confirmed working.

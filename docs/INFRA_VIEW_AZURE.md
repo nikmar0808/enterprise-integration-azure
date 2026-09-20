@@ -2,7 +2,7 @@
 
 This view is intentionally split into four layers. Read them in order: **Big Picture → Azure Infrastructure → Identity / Deployment → Terraform Map**.
 
-Resource names, Terraform resource types, source files, and usage relationships throughout this document are the actual identifiers provisioned for this project — see `ARCHITECTURE_AZURE.md`, Section 8, for the full inventory.
+Resource names, Terraform resource types, source files, and usage relationships throughout this document are those of the reference implementation. Account-specific identifiers (tenant, subscription, repository and application IDs) appear only as placeholders — see `ARCHITECTURE_AZURE.md`, Section 8, for the identifier inventory.
 
 ---
 
@@ -125,7 +125,7 @@ flowchart TB
 | PostgreSQL Flexible Server | `azurerm_postgresql_flexible_server` | `eai-dev-pg-glbunq` | `eai-uat-pg-glbunq` | `eai-prod-pg-glbunq` | `infra/<env>/postgresql.tf` |
 | Private DNS Zone | `azurerm_private_dns_zone` | `privatelink.postgres.database.azure.com` (own instance per environment) | same shape | same shape | `infra/<env>/postgresql.tf` |
 | API Management | `azurerm_api_management` | `eai-dev-apim-glbunq` | `eai-uat-apim-glbunq` | `eai-prod-apim-glbunq` | `infra/<env>/api-management.tf` |
-| Container Registry (shared, not per-environment) | `azurerm_container_registry.eai` | `eaisharedacr` (single instance, `eai-shared-rg`, workspace `eai-shared-azure`) | | | `infra/shared/main.tf` |
+| Container Registry (shared, not per-environment) | `azurerm_container_registry.eai_acr` | `eaisharedacr` (single instance, `eai-shared-rg`, workspace `eai-shared-azure`) | | | `infra/shared/acr.tf` |
 | Azure Bastion (superseded, not provisioned) | `azurerm_bastion_host` | Commented out in all three environments | | | `infra/<env>/bastion.tf` |
 
 # 3. Identity / Deployment — Who Can Do What
@@ -137,16 +137,16 @@ flowchart TB
 
     GHFEDref["Federated credential\ngithub-actions-dev-ref\nsubject: ref:refs/heads/develop"]
     GHFEDenv["Federated credential\ngithub-actions-dev-environment\nsubject: environment:dev"]
-    GHAdev["Entra application\ngha-deploy-dev-identity\nclient 4ea4114e-..."]
+    GHAdev["Entra application\ngha-deploy-dev-identity"]
 
     GHFEDuat["Federated credential\ngithub-actions-uat\nsubject: environment:uat"]
-    GHAuat["Entra application\ngha-deploy-uat-identity\nclient ee3d709e-..."]
+    GHAuat["Entra application\ngha-deploy-uat-identity"]
 
     GHFEDprod["Federated credential\ngithub-actions-prod\nsubject: environment:prod"]
-    GHAprod["Entra application\ngha-deploy-prod-identity\nclient ad2adba6-..."]
+    GHAprod["Entra application\ngha-deploy-prod-identity"]
 
-    TFCFED["Federated credential\nhcp-terraform-workload-identity\nsubject: organization:MyOtg:workspace:eai-*-azure"]
-    TFCID["Entra application\ntfc-run-identity\nclient d43edd62-..."]
+    TFCFED["Federated credentials (three)\nhcp-terraform-workload-identity\none per environment workspace: dev, uat, prod"]
+    TFCID["Entra applications (three)\ntfc-run-identity\ndev, uat, prod"]
 
     GHA["GitHub Actions"]
     TFC["HCP Terraform\n(Local Execution Mode — not the active path)"]
@@ -206,17 +206,14 @@ flowchart TB
 
 | Federated credential | Subject | Matches |
 |---|---|---|
-| `github-actions-dev-ref` | `repo:nikmar0808@<GITHUB_OWNER_ID>/enterprise-integration-azure@<GITHUB_REPO_ID>:ref:refs/heads/develop` | The build/push job — no `environment:` key declared, triggered by a plain push |
-| `github-actions-dev-environment` | `repo:nikmar0808@<GITHUB_OWNER_ID>/enterprise-integration-azure@<GITHUB_REPO_ID>:environment:dev` | The `deploy-dev` job — declares `environment: dev`, receives an environment-shaped claim regardless of branch |
+| `github-actions-dev-ref` | `repo:<GITHUB_ORG>@<GITHUB_OWNER_ID>/<REPO_NAME>@<GITHUB_REPO_ID>:ref:refs/heads/develop` | The build/push job — no `environment:` key declared, triggered by a plain push |
+| `github-actions-dev-environment` | `repo:<GITHUB_ORG>@<GITHUB_OWNER_ID>/<REPO_NAME>@<GITHUB_REPO_ID>:environment:dev` | The `deploy-dev` job — declares `environment: dev`, receives an environment-shaped claim regardless of branch |
 
 UAT and Production each need only one federated credential apiece, since `promote-uat` and `promote-prod` are exclusively `workflow_dispatch`-triggered and always declare their `environment:` key — there is no equivalent push-triggered build job on either branch to also account for.
 
-**NOTE**
-Subjects must follow pattern: repo:<owner_name>@<owner_id>/<repository_name>@<repository_id>:<ref-or-environment>
+**Note on the subject format.** Subjects follow the pattern `repo:<owner_name>@<owner_id>/<repository_name>@<repository_id>:<ref-or-environment>`.
 
-Open this in a browser: https://api.github.com/repos/nikmar0808/enterprise-integration-azure
-**Record:** "id": **0123456789**, this is `GITHUB_REPO_ID` corresponding to `GITHUB_REPO_NAME` `enterprise-integration-azure`
-**Record:** "owner": { "login": "nikmar0808", "id": **123456789**, ... ...}, this is `GITHUB_OWNER_ID` corresponding to `GITHUB_OWNER` `nikmar0808`
+The numeric identifiers are read from the GitHub REST API response for `https://api.github.com/repos/<GITHUB_ORG>/<REPO_NAME>`: the top-level `id` field is `<GITHUB_REPO_ID>`, and the `owner.id` field is `<GITHUB_OWNER_ID>`.
 
 ### GitHub Actions permissions by identity
 
@@ -242,7 +239,7 @@ This is a deliberate divergence worth stating plainly, since a design assuming V
 
 ### HCP Terraform identity
 
-Bootstrap creates `tfc-run-identity` and its federated credential, scoped to `organization:MyOtg:project:*:workspace:eai-*-azure:run_phase:*` — wildcarded across all four workspaces, since workspace-level state isolation (not this trust condition) is what actually separates one environment's infrastructure from another's. **No RBAC role assignment is granted to this identity anywhere in this project**, because every workspace runs under Local Execution Mode — HCP Terraform never itself executes a plan or apply, so its own workload identity is never actually presented to Azure for anything beyond the identity's own existence. It is retained for parity with the equivalent GitHub Actions identity model and becomes relevant only if a workspace is later switched to Remote or Agent execution mode.
+Bootstrap creates three `tfc-run-identity` applications (`tfc_run_dev`, `tfc_run_uat`, `tfc_run_prod`; identical display names), each with one federated credential scoped to a single environment's workspace: `organization:<HCP_TERRAFORM_ORG>:project:*:workspace:<that environment's workspace>:run_phase:*`. No identity or credential exists for the shared workspace. **No RBAC role assignment is granted to any of these identities anywhere in this project**, because every workspace runs under Local Execution Mode — HCP Terraform never itself executes a plan or apply, so its own workload identity is never actually presented to Azure for anything beyond the identity's own existence. The identities are retained for parity with the equivalent GitHub Actions identity model and become relevant only if a workspace is later switched to Remote or Agent execution mode.
 
 # 4. Terraform Map — Where Is Everything Defined?
 
@@ -250,7 +247,7 @@ Bootstrap creates `tfc-run-identity` and its federated credential, scoped to `or
 %%{init: {"theme":"base","themeVariables":{"fontFamily":"Arial","fontSize":"16px"},"flowchart":{"nodeSpacing":25,"rankSpacing":45,"padding":10}}}%%
 flowchart TB
     B["infra/bootstrap/main.tf\nONE-TIME BOOTSTRAP\nlocal state"]
-    S["infra/shared/main.tf\nSHARED — eai-shared-azure workspace\neai-shared-rg + eaisharedacr\nnever destroyed"]
+    S["infra/shared/*.tf\nSHARED — eai-shared-azure workspace\neai-shared-rg + eaisharedacr\nnever destroyed"]
 
     Md["infra/dev/main.tf\nbackend + provider, eai-dev-azure"]
     Nd["infra/dev/networking.tf"]
@@ -300,21 +297,31 @@ flowchart TB
 | `gha_deploy_dev` (credential) | `azuread_application_federated_identity_credential` | environment-shaped credential | GitHub Actions `deploy-dev` job | Trusts jobs declaring `environment: dev` |
 | `gha_deploy_uat` | `azuread_application` + `azuread_service_principal` + federated credential | `gha-deploy-uat-identity` | `infra/uat/identity.tf` | UAT promotion identity |
 | `gha_deploy_prod` | `azuread_application` + `azuread_service_principal` + federated credential | `gha-deploy-prod-identity` | `infra/prod/identity.tf` | Production promotion identity |
-| `tfc_run` | `azuread_application` + `azuread_service_principal` + federated credential | `tfc-run-identity` | Not actively consumed (Local Execution Mode) | Parity with the GitHub Actions identity model |
+| `tfc_run_dev` | `azuread_application` + `azuread_service_principal` + federated credential | `tfc-run-identity` (workspace-scoped: dev) | Not actively consumed (Local Execution Mode) | Parity with the GitHub Actions identity model |
+| `tfc_run_uat` | `azuread_application` + `azuread_service_principal` + federated credential | `tfc-run-identity` (workspace-scoped: UAT) | Not actively consumed (Local Execution Mode) | Parity with the GitHub Actions identity model |
+| `tfc_run_prod` | `azuread_application` + `azuread_service_principal` + federated credential | `tfc-run-identity` (workspace-scoped: prod) | Not actively consumed (Local Execution Mode) | Parity with the GitHub Actions identity model |
 
-### `infra/shared/main.tf` — the one cross-environment resource
+### `infra/shared/*.tf` — the one cross-environment resource
 
-- `azurerm_resource_group.shared` — `eai-shared-rg`
-- `azurerm_container_registry.eai` — `eaisharedacr`, SKU `Basic`, `admin_enabled = false`
-- Backed by its own HCP Terraform workspace, `eai-shared-azure` — deliberately not folded into any environment's state, so no environment's destroy/recreate cycle can ever touch the shared registry
-- Outputs: `acr_id`, `acr_login_server` — consumed by every environment's `identity.tf` via a `data "azurerm_container_registry"` lookup, not a Terraform resource reference (the registry lives in a different state file)
+- `main.tf` — HCP Terraform Cloud backend (the shared workspace) and the `azurerm` provider (`~> 4.0`) only
+- `resource-group.tf` — `azurerm_resource_group.shared` — `eai-shared-rg`
+- `acr.tf` — `azurerm_container_registry.eai_acr` — name from `var.acr_name`, SKU `Basic`, `admin_enabled = false`
+- `variables.tf` — input variables (several declared but not consumed by this folder)
+- Backed by its own HCP Terraform workspace — deliberately not folded into any environment's state, so no environment's destroy/recreate cycle can ever touch the shared registry
+- Outputs: `acr_id`, `acr_login_server` — the environments resolve the registry through a `data "azurerm_container_registry"` lookup, not a Terraform resource reference (the registry lives in a different state file)
 
-### `infra/<env>/main.tf` — backend and provider, per environment
+### `infra/<env>/main.tf` — backend, providers and resource group, per environment
 
-- HCP Terraform Cloud block: organization `MyOtg`, workspace `eai-dev-azure` / `eai-uat-azure` / `eai-prod-azure`
-- `azurerm` provider, `~> 4.0`; authenticates via the active `az login` session under Local Execution Mode
-- Declares `var.operator_ip_cidr` — consumed by `networking.tf`'s `AllowOperatorSSH` rule; supplied at `apply` time as a CLI `-var`, never committed to a `.tfvars` file
+- HCP Terraform Cloud block: one workspace per environment (reference-deployment examples: `eai-dev-azure` / `eai-uat-azure` / `eai-prod-azure`)
+- Providers pinned in `required_providers`: `azurerm` `~> 4.0`, `random` `~> 3.6`, `azuread` `~> 3.0`, `tls` `~> 4.0`; each provider block is declared explicitly. `azurerm` authenticates through the active `az login` session under Local Execution Mode
+- The environment's `azurerm_resource_group`
 - Declares `data "azurerm_container_registry" "shared"` — the cross-workspace registry lookup
+
+### `infra/<env>/variables.tf` and `terraform.tfvars`
+
+- `variables.tf` declares the environment's inputs: `azure_tenant_id`, `azure_subscription_id` and `gha_deploy_client_id` (all sensitive), `acr_name`, `key_vault_name`, `postgres_server_name`, `apim_name` and `operator_ip_cidr`, together with several bootstrap-derived values (`github_org`, `github_owner_id`, `repo_name`, `github_repo_id`, `hcp_terraform_org`, `hcp_terraform_ws_*`) of which only some are consumed in an environment folder (for example, `github_org` in the API Management publisher e-mail)
+- Values are supplied from a local `terraform.tfvars`, which `.gitignore` excludes from version control (a `.sample` file is committed); `operator_ip_cidr` may alternatively be passed on the command line with `-var`
+- `operator_ip_cidr` is consumed by `networking.tf`'s `AllowOperatorSSH` rule
 
 ### `infra/<env>/networking.tf`
 
@@ -327,7 +334,7 @@ flowchart TB
 
 - `azurerm_user_assigned_identity.vm` — `eai-<env>-vm-id`
 - `azurerm_role_assignment.vm_acr_pull` — `AcrPull` on the shared registry, cross-workspace scope
-- `data.azuread_service_principal.gha_deploy_<env>` — looked up by the real client ID recorded from bootstrap
+- `data.azuread_service_principal.gha_deploy_<env>` — looked up by the client ID supplied through `var.gha_deploy_client_id` (recorded from the bootstrap outputs)
 - `azurerm_role_assignment.gha_<env>_vm_runcommand` — `Virtual Machine Contributor`, scoped to that environment's VM
 - `azurerm_role_assignment.gha_<env>_kv_secrets_user` — `Key Vault Secrets User`, scoped to that environment's Key Vault
 - `azurerm_role_assignment.gha_<env>_acr_pull` — `AcrPull` (Development additionally has `AcrPush`) on the shared registry, granted to the GitHub Actions identity directly (distinct from the VM's own `AcrPull` grant above)
@@ -336,6 +343,7 @@ flowchart TB
 ### `infra/<env>/key-vault.tf`
 
 - `azurerm_key_vault` — RBAC-authorized data plane (`rbac_authorization_enabled = true`), not the legacy access-policy model
+- `tenant_id` is supplied through `var.azure_tenant_id` rather than hardcoded
 - `azurerm_role_assignment.vm_kv_secrets_user`, `azurerm_role_assignment.terraform_kv_secrets_officer` (grants the applying operator's own identity read/write, required to create the two secrets below)
 - `random_password.postgres_admin`, `random_password.api_security_token`
 - `azurerm_key_vault_secret.database_password`, `azurerm_key_vault_secret.api_security_token`
