@@ -230,6 +230,9 @@ terraform {
 
 provider "azuread" {}
 
+# Passing subscription_id and tenant_id explicitly is required for the bootstrap workspace
+# because it does not have a resource group yet, so the provider cannot infer them from a resource group.
+# The other workspaces can omit these values because they have a resource group and the provider can infer them from that.
 provider "azurerm" {
   features {}
   subscription_id = var.azure_subscription_id
@@ -241,11 +244,12 @@ provider "azurerm" {
 # application with three federated credentials. RBAC in Entra is scoped to
 # the service principal, not to which federated credential authenticated
 # it; a single shared application would mean any RBAC grant made to it
-# (Section 10) is usable regardless of which environment's GitHub context
-# obtained the token, defeating the per-environment isolation Section 1
-# Rule 4 requires. This matches AWS's three separate IAM roles exactly —
-# separate principal per environment, not separate trust condition on one
-# shared principal.
+# (see each environment's identity.tf) is usable regardless of which
+# environment's GitHub context obtained the token, defeating the
+# per-environment isolation required by ARCHITECTURE_AZURE.md, Design
+# Principle 4: a separate principal per environment, not a separate trust
+# condition on one shared principal. (The AWS implementation, by contrast,
+# uses a single gha-deploy-role.)
 
 resource "azuread_application" "gha_deploy_dev" {
   display_name = "gha-deploy-dev-identity"
@@ -326,7 +330,7 @@ resource "azuread_service_principal" "tfc_run_dev" {
 resource "azuread_application_federated_identity_credential" "tfc_run_dev" {
   application_id = azuread_application.tfc_run_dev.id
   display_name   = "hcp-terraform-workload-identity"
-  description    = "HCP Terraform OIDC — plan/apply runs across all three workspaces"
+  description    = "HCP Terraform OIDC — plan/apply runs for the dev workspace"
   audiences      = ["api://AzureADTokenExchange"]
   issuer         = "https://app.terraform.io"
   subject        = "organization:${var.hcp_terraform_org}:project:*:workspace:${var.hcp_terraform_ws_dev}:run_phase:*"
@@ -343,7 +347,7 @@ resource "azuread_service_principal" "tfc_run_uat" {
 resource "azuread_application_federated_identity_credential" "tfc_run_uat" {
   application_id = azuread_application.tfc_run_uat.id
   display_name   = "hcp-terraform-workload-identity"
-  description    = "HCP Terraform OIDC — plan/apply runs across all three workspaces"
+  description    = "HCP Terraform OIDC — plan/apply runs for the uat workspace"
   audiences      = ["api://AzureADTokenExchange"]
   issuer         = "https://app.terraform.io"
   subject        = "organization:${var.hcp_terraform_org}:project:*:workspace:${var.hcp_terraform_ws_uat}:run_phase:*"
@@ -360,14 +364,14 @@ resource "azuread_service_principal" "tfc_run_prod" {
 resource "azuread_application_federated_identity_credential" "tfc_run_prod" {
   application_id = azuread_application.tfc_run_prod.id
   display_name   = "hcp-terraform-workload-identity"
-  description    = "HCP Terraform OIDC — plan/apply runs across all three workspaces"
+  description    = "HCP Terraform OIDC — plan/apply runs for the prod workspace"
   audiences      = ["api://AzureADTokenExchange"]
   issuer         = "https://app.terraform.io"
   subject        = "organization:${var.hcp_terraform_org}:project:*:workspace:${var.hcp_terraform_ws_prod}:run_phase:*"
 }
 
 # No RBAC role assignments are created here — that happens once each
-# environment's resource group exists (Section 10), which is exactly the
+# environment's resource group exists (in each environment's identity.tf), which is exactly the
 # circularity this bootstrap step exists to break.
 
 output "gha_deploy_dev_client_id"  { value = azuread_application.gha_deploy_dev.client_id }
@@ -395,7 +399,7 @@ terraform plan
 terraform apply
 ```
 
-**Record all four output values as `<AZURE_CLIENT_ID_DEV>`, `<AZURE_CLIENT_ID_UAT>`, `<AZURE_CLIENT_ID_PROD>`, and a fourth value for the HCP Terraform identity** (not consumed under Local Execution Mode — retained for parity with the GitHub Actions identity model). These are used throughout the remaining phases wherever the corresponding placeholder appears. **Any future edit to this file has no effect on Azure until `terraform apply` is re-run inside `infra/bootstrap/` specifically** — it is a separate root module with its own local state.
+**Record the three GitHub Actions outputs as `<AZURE_CLIENT_ID_DEV>`, `<AZURE_CLIENT_ID_UAT>` and `<AZURE_CLIENT_ID_PROD>`.** The three HCP Terraform outputs (`tfc_run_dev_client_id`, `tfc_run_uat_client_id`, `tfc_run_prod_client_id`) are not consumed under Local Execution Mode and are retained for parity with the GitHub Actions identity model. The GitHub Actions client IDs are used throughout the remaining phases wherever the corresponding placeholder appears. **Any future edit to this file has no effect on Azure until `terraform apply` is re-run inside `infra/bootstrap/` specifically** — it is a separate root module with its own local state.
 
 ### 1.4 HCP Terraform workspace configuration
 
@@ -545,21 +549,24 @@ resource "azurerm_private_dns_zone_virtual_network_link" "postgres" {
 }
 
 resource "azurerm_postgresql_flexible_server" "dev" {
-  name                           = "<AZURE_POSTGRES_SERVER_DEV>"
-  resource_group_name            = azurerm_resource_group.dev.name
-  location                       = azurerm_resource_group.dev.location
-  version                        = "16"
-  zone                           = "2"
-  delegated_subnet_id            = azurerm_subnet.db.id
-  private_dns_zone_id            = azurerm_private_dns_zone.postgres.id
-  public_network_access_enabled  = false
-  administrator_login            = "smart_meter_admin"
-  administrator_password         = random_password.postgres_admin.result
-  storage_mb                     = 32768
-  sku_name                       = "B_Standard_B1ms"
-  backup_retention_days          = 7
+  name                          = var.postgres_server_name
+  resource_group_name           = azurerm_resource_group.dev.name
+  location                      = azurerm_resource_group.dev.location
+  version                       = "16"
+  zone                          = "2"
+  delegated_subnet_id           = azurerm_subnet.db.id
+  private_dns_zone_id           = azurerm_private_dns_zone.postgres.id
+  public_network_access_enabled = false
+  administrator_login           = "smart_meter_admin"
+  administrator_password        = random_password.postgres_admin.result
+  storage_mb                    = 32768
+  sku_name                      = "B_Standard_B1ms"
+  backup_retention_days         = 7
 
-  depends_on = [azurerm_subnet.db, azurerm_private_dns_zone_virtual_network_link.postgres]
+  depends_on = [
+    azurerm_subnet.db,
+    azurerm_private_dns_zone_virtual_network_link.postgres
+  ]
 }
 
 resource "azurerm_postgresql_flexible_server_database" "dev" {
@@ -569,6 +576,8 @@ resource "azurerm_postgresql_flexible_server_database" "dev" {
 
 output "postgres_fqdn" { value = azurerm_postgresql_flexible_server.dev.fqdn }
 ```
+
+The server name is supplied through the `postgres_server_name` variable (value `<AZURE_POSTGRES_SERVER_DEV>` in `terraform.tfvars`) rather than written into the resource block.
 
 The explicit `zone = "2"` and the `depends_on` on the delegated subnet and DNS zone link are both required — their absence produces, respectively, a zone-exchange error surfaced later at the API Management apply step, and an `AnotherOperationInProgress` error from a missing subnet dependency. `public_network_access_enabled = false` is set explicitly rather than relied upon as a default.
 
@@ -861,7 +870,7 @@ permissions:
 
 env:
   ACR_NAME: ${{ vars.ACR_NAME }}
-  ACR_REGISTRY: ${{ vars.ACR_NAME }}.azurecr.io
+  ACR_REGISTRY: ${{ vars.ACR_NAME }}.azurecr.io # ACR_NAME.azurecr.io is the default login server for Azure Container Registry
   AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
   AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
@@ -944,7 +953,7 @@ jobs:
   docker-build-push:
     needs: [java-build-test, python-build-test]
     # No `environment:` key — matches the ref-based federated credential
-    # (Section 7, gha_deploy_dev_ref), not the environment-based one.
+    # (bootstrap: gha_deploy_dev_ref), not the environment-based one.
     if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
     permissions: { contents: read, id-token: write }
@@ -1045,7 +1054,6 @@ jobs:
           COMPOSE_B64=$(base64 -w0 infra/docker-compose.prod.yml)
           DB_PASS=$(az keyvault secret show --vault-name ${{ vars.UAT_KEY_VAULT_NAME }} --name database-password --query value -o tsv)
           API_TOKEN=$(az keyvault secret show --vault-name ${{ vars.UAT_KEY_VAULT_NAME }} --name api-security-token --query value -o tsv)
-          ACR_REGISTRY=${ACR_REGISTRY}
           az vm run-command invoke \
             --resource-group eai-uat-rg \
             --name eai-uat-host \
@@ -1087,7 +1095,6 @@ jobs:
           COMPOSE_B64=$(base64 -w0 infra/docker-compose.prod.yml)
           DB_PASS=$(az keyvault secret show --vault-name ${{ vars.PROD_KEY_VAULT_NAME }} --name database-password --query value -o tsv)
           API_TOKEN=$(az keyvault secret show --vault-name ${{ vars.PROD_KEY_VAULT_NAME }} --name api-security-token --query value -o tsv)
-          ACR_REGISTRY=${ACR_REGISTRY}
           az vm run-command invoke \
             --resource-group eai-prod-rg \
             --name eai-prod-host \

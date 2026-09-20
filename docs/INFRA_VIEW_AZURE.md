@@ -176,7 +176,7 @@ flowchart TB
     GHA -->|OIDC token, promote-prod job| GHAprod
     TFC -.OIDC token, unused under Local mode.-> TFCID
 
-    GHAdev -->|AcrPush + AcrPull| ACR
+    GHAdev -->|AcrPush, push and pull| ACR
     GHAdev -->|Virtual Machine Contributor| VMd
     GHAdev -->|Key Vault Secrets User| KVd
 
@@ -218,7 +218,7 @@ The numeric identifiers are read from the GitHub REST API response for `https://
 ### GitHub Actions permissions by identity
 
 **`gha-deploy-dev-identity` grants:**
-- `AcrPush` and `AcrPull` on `eaisharedacr` (the only one of the three identities with push access, since only Development builds)
+- `AcrPush` on `eaisharedacr` (the only one of the three identities with push access, since only Development builds); the built-in `AcrPush` role also includes pull rights, so no separate `AcrPull` assignment exists for this identity
 - `Virtual Machine Contributor` on `eai-dev-host` (authorizes Run Command invocation)
 - `Key Vault Secrets User` on `eai-dev-kv-glbunq`
 
@@ -226,6 +226,8 @@ The numeric identifiers are read from the GitHub REST API response for `https://
 - `AcrPull` only, on `eaisharedacr` — sufficient for the promotion workflow's tag-existence confirmation step (`az acr repository show`), never for a push
 - `Virtual Machine Contributor` on their own environment's VM only
 - `Key Vault Secrets User` on their own environment's Key Vault only
+
+**Why the push grant differs.** Only the Development build job produces images, so only `gha-deploy-dev-identity` holds `AcrPush` (`azurerm_role_assignment.gha_dev_acr_push`). UAT and Production hold `AcrPull` alone, which permits reading and confirming an image but never writing one. *Analogy:* a loading-dock pass (`AcrPush`) also lets its holder collect cargo, whereas a receiving-dock pass (`AcrPull`) permits collection only.
 
 ### VM managed identity permissions (per environment)
 
@@ -337,7 +339,9 @@ flowchart TB
 - `data.azuread_service_principal.gha_deploy_<env>` — looked up by the client ID supplied through `var.gha_deploy_client_id` (recorded from the bootstrap outputs)
 - `azurerm_role_assignment.gha_<env>_vm_runcommand` — `Virtual Machine Contributor`, scoped to that environment's VM
 - `azurerm_role_assignment.gha_<env>_kv_secrets_user` — `Key Vault Secrets User`, scoped to that environment's Key Vault
-- `azurerm_role_assignment.gha_<env>_acr_pull` — `AcrPull` (Development additionally has `AcrPush`) on the shared registry, granted to the GitHub Actions identity directly (distinct from the VM's own `AcrPull` grant above)
+- `azurerm_role_assignment.gha_dev_acr_push` — `AcrPush` on the shared registry, Development only; the role includes pull rights, so Development has no separate pull assignment
+- `azurerm_role_assignment.gha_uat_acr_pull` and `gha_prod_acr_pull` — `AcrPull` on the shared registry, defined in the UAT and Production folders' `identity.tf` respectively
+- Both are granted to the GitHub Actions identity directly, distinct from the VM's own `AcrPull` grant above
 - Output: `vm_identity_client_id`
 
 ### `infra/<env>/key-vault.tf`

@@ -100,7 +100,7 @@ jobs:
   docker-build-push:
     needs: [java-build-test, python-build-test]
     # No `environment:` key — matches the ref-based federated credential
-    # (Section 7, gha_deploy_dev_ref), not the environment-based one.
+    # (bootstrap: gha_deploy_dev_ref), not the environment-based one.
     if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
     permissions: { contents: read, id-token: write }
@@ -201,7 +201,6 @@ jobs:
           COMPOSE_B64=$(base64 -w0 infra/docker-compose.prod.yml)
           DB_PASS=$(az keyvault secret show --vault-name ${{ vars.UAT_KEY_VAULT_NAME }} --name database-password --query value -o tsv)
           API_TOKEN=$(az keyvault secret show --vault-name ${{ vars.UAT_KEY_VAULT_NAME }} --name api-security-token --query value -o tsv)
-          ACR_REGISTRY=${ACR_REGISTRY}
           az vm run-command invoke \
             --resource-group eai-uat-rg \
             --name eai-uat-host \
@@ -243,7 +242,6 @@ jobs:
           COMPOSE_B64=$(base64 -w0 infra/docker-compose.prod.yml)
           DB_PASS=$(az keyvault secret show --vault-name ${{ vars.PROD_KEY_VAULT_NAME }} --name database-password --query value -o tsv)
           API_TOKEN=$(az keyvault secret show --vault-name ${{ vars.PROD_KEY_VAULT_NAME }} --name api-security-token --query value -o tsv)
-          ACR_REGISTRY=${ACR_REGISTRY}
           az vm run-command invoke \
             --resource-group eai-prod-rg \
             --name eai-prod-host \

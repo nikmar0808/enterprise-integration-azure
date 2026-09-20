@@ -30,15 +30,15 @@ resource "azurerm_subnet" "db" {
 # --- SUPERSEDED: Azure Bastion subnet ---
 # This is how interactive VM access should have been implemented if not for
 # Azure Free Tier's 3-Standard-public-IP-per-subscription limit. A dedicated
-# Bastion host per environment (Section 10.1.6) requires one additional
+# Bastion host per environment (ARCHITECTURE_AZURE.md, Section 6) requires one additional
 # Standard public IP per environment (3 total across DEV/UAT/PROD), which
 # together with the 3 VM public IPs already required as APIM's HTTP_PROXY
-# backend target (Section 10.1.8) exceeds the free-tier quota (6 > 3, and
+# backend target (ARCHITECTURE_AZURE.md, Section 3) exceeds the free-tier quota (6 > 3, and
 # the VM IPs are non-negotiable). Commented out below and replaced by the
-# AllowOperatorSSH rule on the app NSG plus `az ssh vm` (Section 10.1.6),
+# AllowOperatorSSH rule on the app NSG plus `az ssh vm` (ARCHITECTURE_AZURE.md, Section 6),
 # which reuses the VM's already-required public IP and consumes no
 # additional quota. A real, non-free-tier subscription should re-enable
-# this subnet and Section 10.1.6's Bastion resources, and remove the
+# this subnet and the Bastion resources in bastion.tf, and remove the
 # AllowOperatorSSH rule below and its NSG-based replacement in favor of
 # this platform-managed, non-internet-routable path.
 #

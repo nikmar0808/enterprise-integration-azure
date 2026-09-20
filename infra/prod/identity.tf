@@ -16,6 +16,10 @@ data "azuread_service_principal" "gha_deploy_prod" {
   client_id = var.gha_deploy_client_id
 }
 
+# Grants only the ability to invoke Run Command against this one VM — not
+# Contributor on the resource group, not access to any other environment's
+# VM. This is the Azure equivalent of AWS's ssm:SendCommand statement
+# scoped by ssm:resourceTag/Name to one tagged instance.
 resource "azurerm_role_assignment" "gha_prod_vm_runcommand" {
   scope                = azurerm_linux_virtual_machine.prod.id
   role_definition_name = "Virtual Machine Contributor"

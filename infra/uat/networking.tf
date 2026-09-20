@@ -28,11 +28,22 @@ resource "azurerm_subnet" "db" {
 }
 
 # --- SUPERSEDED: Azure Bastion subnet ---
-# See DEV's networking.tf (Section 10.1.1) for the full rationale — the
-# same free-tier 3-Standard-public-IP quota applies identically here.
-# Commented out and replaced by the AllowOperatorSSH rule on the app NSG
-# plus `az ssh vm` (Section 10.2.6).
+# This is how interactive VM access should have been implemented if not for
+# Azure Free Tier's 3-Standard-public-IP-per-subscription limit. A dedicated
+# Bastion host per environment (ARCHITECTURE_AZURE.md, Section 6) requires one additional
+# Standard public IP per environment (3 total across DEV/UAT/PROD), which
+# together with the 3 VM public IPs already required as APIM's HTTP_PROXY
+# backend target (ARCHITECTURE_AZURE.md, Section 3) exceeds the free-tier quota (6 > 3, and
+# the VM IPs are non-negotiable). Commented out below and replaced by the
+# AllowOperatorSSH rule on the app NSG plus `az ssh vm` (ARCHITECTURE_AZURE.md, Section 6),
+# which reuses the VM's already-required public IP and consumes no
+# additional quota. A real, non-free-tier subscription should re-enable
+# this subnet and the Bastion resources in bastion.tf, and remove the
+# AllowOperatorSSH rule below and its NSG-based replacement in favor of
+# this platform-managed, non-internet-routable path.
 #
+# Azure Bastion requires a subnet with exactly this name — not a naming
+# convention, a hard platform requirement.
 # resource "azurerm_subnet" "bastion" {
 #   name                 = "AzureBastionSubnet"
 #   resource_group_name  = azurerm_resource_group.uat.name
@@ -57,9 +68,12 @@ resource "azurerm_network_security_group" "app" {
     destination_address_prefix = "*"
   }
 
-  # Replaces Bastion's network path — see DEV's networking.tf comment
-  # (Section 10.1.1) for the full rationale. var.operator_ip_cidr must be a
-  # narrow range (ideally a /32) — never 0.0.0.0/0.
+  # Replaces Bastion's network path (see superseded subnet block above) —
+  # direct AAD-authenticated SSH to the VM's own public IP, which is already
+  # required for the APIM backend target and therefore consumes no
+  # additional public-IP quota. var.operator_ip_cidr must be a narrow range
+  # (ideally a /32) — never 0.0.0.0/0, since unlike Bastion's data path this
+  # port is genuinely internet-facing.
   security_rule {
     name                       = "AllowOperatorSSH"
     priority                   = 110

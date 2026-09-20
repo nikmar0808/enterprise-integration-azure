@@ -22,11 +22,12 @@ provider "azurerm" {
 # application with three federated credentials. RBAC in Entra is scoped to
 # the service principal, not to which federated credential authenticated
 # it; a single shared application would mean any RBAC grant made to it
-# (Section 10) is usable regardless of which environment's GitHub context
-# obtained the token, defeating the per-environment isolation Section 1
-# Rule 4 requires. This matches AWS's three separate IAM roles exactly —
-# separate principal per environment, not separate trust condition on one
-# shared principal.
+# (see each environment's identity.tf) is usable regardless of which
+# environment's GitHub context obtained the token, defeating the
+# per-environment isolation required by ARCHITECTURE_AZURE.md, Design
+# Principle 4: a separate principal per environment, not a separate trust
+# condition on one shared principal. (The AWS implementation, by contrast,
+# uses a single gha-deploy-role.)
 
 resource "azuread_application" "gha_deploy_dev" {
   display_name = "gha-deploy-dev-identity"
@@ -148,7 +149,7 @@ resource "azuread_application_federated_identity_credential" "tfc_run_prod" {
 }
 
 # No RBAC role assignments are created here — that happens once each
-# environment's resource group exists (Section 10), which is exactly the
+# environment's resource group exists (in each environment's identity.tf), which is exactly the
 # circularity this bootstrap step exists to break.
 
 output "gha_deploy_dev_client_id"  { value = azuread_application.gha_deploy_dev.client_id }

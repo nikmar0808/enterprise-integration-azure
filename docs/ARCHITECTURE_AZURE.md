@@ -150,13 +150,13 @@ Every other Azure resource in this project is environment-scoped — a separate 
 
 To genuinely build once and promote the same image through Development → UAT → Production, rather than re-pushing or copying an image at each promotion step, all three environments must pull from the same registry. `eai-shared-rg` holds only `eaisharedacr` for this reason, provisioned once from its own HCP Terraform workspace (`eai-shared-azure`), and is never destroyed as part of any environment's provisioning or teardown lifecycle.
 
-Each environment's VM managed identity is granted `AcrPull`, scoped directly to the shared registry resource, via a cross-resource-group role assignment — Azure RBAC scope is independent of resource-group membership, so the registry does not need to live inside any environment's own resource group for this to work. The GitHub Actions deployment identity for Development additionally holds `AcrPush`, since only Development's build job produces new images; UAT's and Production's deployment identities hold no push permission at all, consistent with them never rebuilding.
+Each environment's VM managed identity is granted `AcrPull`, scoped directly to the shared registry resource, via a cross-resource-group role assignment — Azure RBAC scope is independent of resource-group membership, so the registry does not need to live inside any environment's own resource group for this to work. The GitHub Actions deployment identity for Development holds `AcrPush` (a built-in role that also includes pull rights), since only Development's build job produces new images; UAT's and Production's deployment identities are granted `AcrPull` alone and therefore hold no push permission, consistent with them never rebuilding. In dock terms, a loading pass also permits collecting cargo, whereas a receiving pass does not permit loading.
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"fontFamily":"Arial","fontSize":"16px"},"flowchart":{"nodeSpacing":30,"rankSpacing":50,"padding":10}}}%%
 flowchart TB
     ACR["eaisharedacr\nresource group: eai-shared-rg\nprovisioned once, never destroyed"]
-    GHAdev["gha-deploy-dev-identity\nAcrPush + AcrPull"]
+    GHAdev["gha-deploy-dev-identity\nAcrPush (includes pull)"]
     GHAuat["gha-deploy-uat-identity\nAcrPull (tag existence check only)"]
     GHAprod["gha-deploy-prod-identity\nAcrPull (tag existence check only)"]
     VMdID["eai-dev-vm-id\nAcrPull"]
@@ -322,7 +322,7 @@ UAT and Production each require only the environment-shaped credential, since th
 
 | Identity | Grant | Scope |
 |---|---|---|
-| `gha-deploy-dev-identity` | `AcrPush` | `eaisharedacr` |
+| `gha-deploy-dev-identity` | `AcrPush` | `eaisharedacr` (includes pull rights; no separate `AcrPull` assignment) |
 | `gha-deploy-dev-identity` | `Virtual Machine Contributor` | `eai-dev-host` |
 | `gha-deploy-dev-identity` | `Key Vault Secrets User` | `eai-dev-kv-glbunq` |
 | `gha-deploy-uat-identity` | `AcrPull` | `eaisharedacr` (tag-existence confirmation before promotion) |

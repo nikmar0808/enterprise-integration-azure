@@ -40,7 +40,7 @@ resource "azurerm_role_assignment" "gha_dev_vm_runcommand" {
   principal_id         = data.azuread_service_principal.gha_deploy_dev.object_id
 }
 
-# Required by the deploy-dev job (Section 11.2), which reads the two Key
+# Required by the deploy-dev job in ci.yml, which reads the two Key
 # Vault secrets from within the GitHub Actions runner rather than on the VM.
 resource "azurerm_role_assignment" "gha_dev_kv_secrets_user" {
   scope                = azurerm_key_vault.dev.id
